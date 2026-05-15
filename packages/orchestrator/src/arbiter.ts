@@ -90,8 +90,8 @@ agent_pct + funder_pct must equal 100.`;
   const resolution = parseResolution(text);
 
   // Convert percentages to absolute USDC amounts for the distributions array
-  const agentAmount = (milestoneAmount * resolution.agent_pct / 100).toFixed(7);
-  const funderAmount = (milestoneAmount * resolution.funder_pct / 100).toFixed(7);
+  const agentAmount = parseFloat((milestoneAmount * resolution.agent_pct / 100).toFixed(7));
+  const funderAmount = parseFloat((milestoneAmount * resolution.funder_pct / 100).toFixed(7));
 
   const distributions: Distribution[] = [];
   if (resolution.agent_pct > 0) {
@@ -102,7 +102,7 @@ agent_pct + funder_pct must equal 100.`;
   }
   // Ensure at least one distribution (TW requires total > 0)
   if (distributions.length === 0) {
-    distributions.push({ address: funderAddress, amount: milestoneAmount.toFixed(7) });
+    distributions.push({ address: funderAddress, amount: parseFloat(milestoneAmount.toFixed(7)) });
   }
 
   let resolveTxHash: string | null = null;

@@ -62,14 +62,44 @@ app.post('/query', async (req, res) => {
       }
     }
 
-    const result: Record<string, any> = { query: q, timestamp: new Date().toISOString() };
-    if (trades)      result.stellar_dex_trades = trades;
-    if (orderbook)   result.stellar_dex_orderbook = orderbook;
-    if (networkStats) result.network_stats = networkStats;
-    if (balances)    result.account_balances = balances;
-    if (context)     result.context_received = true;
+    // Format as human-readable markdown summary
+    const lines: string[] = ['# Stellar Oracle Data Report', ''];
 
-    res.json({ result: JSON.stringify(result, null, 2), agent: 'StellarOracle', timestamp: new Date().toISOString() });
+    if (trades && trades.length > 0) {
+      const latestPrice = parseFloat(trades[0].price);
+      lines.push(`## XLM/USDC Price`);
+      lines.push(`- **Latest price**: ${latestPrice.toFixed(6)} USDC per XLM`);
+      lines.push(`- **Recent trades**: ${trades.length} trades fetched`);
+      lines.push(`- **Trade range**: ${Math.min(...trades.map((t: any) => parseFloat(t.price))).toFixed(6)} – ${Math.max(...trades.map((t: any) => parseFloat(t.price))).toFixed(6)} USDC`);
+      lines.push('');
+    }
+
+    if (orderbook) {
+      lines.push(`## DEX Orderbook`);
+      lines.push(`- **Best bid**: ${orderbook.bids[0]?.price ?? 'N/A'} USDC`);
+      lines.push(`- **Best ask**: ${orderbook.asks[0]?.price ?? 'N/A'} USDC`);
+      lines.push(`- **Spread**: ${orderbook.spread} USDC`);
+      lines.push('');
+    }
+
+    if (networkStats) {
+      lines.push(`## Network Stats`);
+      lines.push(`- **Latest ledger**: ${networkStats.latest_ledger}`);
+      lines.push(`- **Ops in ledger**: ${networkStats.total_operations}`);
+      lines.push(`- **Closed at**: ${networkStats.closed_at}`);
+      lines.push('');
+    }
+
+    if (balances) {
+      lines.push(`## Account Balances`);
+      balances.forEach((b: any) => lines.push(`- **${b.asset}**: ${b.balance}`));
+      lines.push('');
+    }
+
+    lines.push(`*Data fetched at ${new Date().toISOString()}*`);
+    const markdownResult = lines.join('\n');
+
+    res.json({ result: markdownResult, agent: 'StellarOracle', timestamp: new Date().toISOString() });
   } catch (err: any) {
     console.error('[StellarOracle] Query error:', err.message);
     res.status(500).json({ error: err.message });

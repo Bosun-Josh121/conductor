@@ -75,15 +75,38 @@ async function twGet(path: string): Promise<any> {
   return res.json();
 }
 
-// ── Submit signed XDR via TW endpoint, with Horizon fallback ──────────────────
+// ── Submit signed XDR ─────────────────────────────────────────────────────────
 
-async function submitToTW(signedXdr: string): Promise<string> {
-  // Confirmed field name: signedXdr (docs.trustlesswork.com/api-rest/helpers/send-transaction)
-  const result = await twPost('/helper/send-transaction', { signedXdr });
-  return result.transactionHash ?? result.hash ?? result.tx_hash ?? '';
+interface TWSubmitResult {
+  txHash: string;
+  contractId?: string;  // present in deploy responses
+  escrow?: any;         // full escrow object in deploy responses
 }
 
-async function submitToHorizon(signedXdr: string): Promise<string> {
+async function submitToTW(signedXdr: string): Promise<TWSubmitResult> {
+  // Confirmed: response includes { status, message, contractId, escrow }
+  // Note: TW does NOT return a tx hash — txHash will be empty unless Horizon is queried separately.
+  const result = await twPost('/helper/send-transaction', { signedXdr });
+
+  // Attempt to get tx hash from Horizon as well (non-blocking)
+  let txHash = result.transactionHash ?? result.hash ?? result.tx_hash ?? '';
+  if (!txHash) {
+    // Parse the tx hash from the signed XDR envelope hash
+    try {
+      const { TransactionBuilder: TB, Networks: N } = await import('@stellar/stellar-sdk');
+      const tx = TB.fromXDR(signedXdr, N.TESTNET);
+      txHash = (tx as any).hash()?.toString('hex') ?? '';
+    } catch { /* non-fatal */ }
+  }
+
+  return {
+    txHash,
+    contractId: result.contractId,
+    escrow: result.escrow,
+  };
+}
+
+async function submitToHorizon(signedXdr: string): Promise<TWSubmitResult> {
   const res = await fetch(`${HORIZON_URL}/transactions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -95,10 +118,10 @@ async function submitToHorizon(signedXdr: string): Promise<string> {
     throw new Error(`Horizon submit: ${text.slice(0, 300)}`);
   }
   const data = await res.json();
-  return data.hash ?? '';
+  return { txHash: data.hash ?? '' };
 }
 
-async function signAndSubmit(unsignedXdr: string, signerKeypair: Keypair): Promise<string> {
+async function signAndSubmit(unsignedXdr: string, signerKeypair: Keypair): Promise<TWSubmitResult> {
   const signedXdr = signXdr(unsignedXdr, signerKeypair);
   try {
     return await submitToTW(signedXdr);
@@ -106,6 +129,11 @@ async function signAndSubmit(unsignedXdr: string, signerKeypair: Keypair): Promi
     console.warn(`[TW] /helper/send-transaction failed (${err.message}), falling back to Horizon`);
     return await submitToHorizon(signedXdr);
   }
+}
+
+// Convenience wrapper returning only the tx hash (for non-deploy operations)
+async function signAndSubmitHash(unsignedXdr: string, signerKeypair: Keypair): Promise<string> {
+  return (await signAndSubmit(unsignedXdr, signerKeypair)).txHash;
 }
 
 function extractUnsignedXdr(response: any, op: string): string {
@@ -129,8 +157,8 @@ function usdcTrustline() {
 
 export interface MilestonePayload {
   description: string;
-  amount: string;       // USDC as decimal string e.g. "1.0000000"
-  receiver: string;     // per-milestone receiver address (confirmed: multi-release has receiver per milestone)
+  amount: string | number;  // API expects number; string is accepted and parsed below
+  receiver: string;         // per-milestone receiver address
 }
 
 export interface DeployEscrowSpec {
@@ -155,7 +183,7 @@ export interface DeployResult {
 
 export interface Distribution {
   address: string;
-  amount: string;   // absolute USDC amount as decimal string
+  amount: number;   // absolute USDC amount as number (API requires number, not string)
 }
 
 // ── Deploy multi-release escrow ────────────────────────────────────────────────
@@ -184,7 +212,7 @@ export async function deployEscrow(
     platformFee: 0,
     milestones: spec.milestones.map(m => ({
       description: m.description,
-      amount: m.amount,
+      amount: parseFloat(String(m.amount)),   // API requires number, not string
       receiver: m.receiver,
     })),
     trustline: usdcTrustline(),
@@ -192,12 +220,19 @@ export async function deployEscrow(
 
   const response = await twPost('/deployer/multi-release', payload);
   const unsignedXdr = extractUnsignedXdr(response, 'deployEscrow');
-  const txHash = await signAndSubmit(unsignedXdr, platformKeypair);
 
-  // Confirmed response field: contractId
-  const contractId = response.contractId ?? response.escrowId ?? response.contract_id ?? '';
+  // contractId is NOT in the /deployer/multi-release response —
+  // it is returned by /helper/send-transaction after the transaction is confirmed.
+  const submitResult = await signAndSubmit(unsignedXdr, platformKeypair);
+  const contractId = submitResult.contractId
+    ?? submitResult.escrow?.contractId
+    ?? '';
 
-  return { contractId, transactionHash: txHash };
+  if (!contractId) {
+    throw new Error(`deployEscrow: contractId not returned by send-transaction. submitResult: ${JSON.stringify(submitResult).slice(0, 300)}`);
+  }
+
+  return { contractId, transactionHash: submitResult.txHash };
 }
 
 // ── Fund escrow ────────────────────────────────────────────────────────────────
@@ -212,7 +247,7 @@ export async function fundEscrow(
     signer: funderKeypair.publicKey(),
     amount: parseFloat(amountUsdc),  // confirmed: amount is a number
   });
-  return signAndSubmit(extractUnsignedXdr(response, 'fundEscrow'), funderKeypair);
+  return signAndSubmitHash(extractUnsignedXdr(response, 'fundEscrow'), funderKeypair);
 }
 
 // ── Mark milestone done (Service Provider signs) ───────────────────────────────
@@ -233,7 +268,7 @@ export async function markMilestone(
     newEvidence: evidence.slice(0, 500),
     serviceProvider: serviceProviderKeypair.publicKey(),
   });
-  return signAndSubmit(extractUnsignedXdr(response, 'markMilestone'), serviceProviderKeypair);
+  return signAndSubmitHash(extractUnsignedXdr(response, 'markMilestone'), serviceProviderKeypair);
 }
 
 // ── Approve milestone (Approver / AI Verifier signs) ──────────────────────────
@@ -250,7 +285,7 @@ export async function approveMilestone(
     milestoneIndex: String(milestoneIndex),
     approver: approverKeypair.publicKey(),
   });
-  return signAndSubmit(extractUnsignedXdr(response, 'approveMilestone'), approverKeypair);
+  return signAndSubmitHash(extractUnsignedXdr(response, 'approveMilestone'), approverKeypair);
 }
 
 // ── Release milestone funds (Release Signer / Platform signs) ─────────────────
@@ -267,7 +302,7 @@ export async function releaseMilestone(
     milestoneIndex: String(milestoneIndex),
     releaseSigner: releaseSignerKeypair.publicKey(),
   });
-  return signAndSubmit(extractUnsignedXdr(response, 'releaseMilestone'), releaseSignerKeypair);
+  return signAndSubmitHash(extractUnsignedXdr(response, 'releaseMilestone'), releaseSignerKeypair);
 }
 
 // ── Start dispute (Service Provider signs) ────────────────────────────────────
@@ -284,7 +319,7 @@ export async function startDispute(
     milestoneIndex: String(milestoneIndex),
     signer: serviceProviderKeypair.publicKey(),
   });
-  return signAndSubmit(extractUnsignedXdr(response, 'startDispute'), serviceProviderKeypair);
+  return signAndSubmitHash(extractUnsignedXdr(response, 'startDispute'), serviceProviderKeypair);
 }
 
 // ── Resolve dispute (Dispute Resolver / AI Arbiter signs) ─────────────────────
@@ -304,30 +339,28 @@ export async function resolveDispute(
     disputeResolver: arbiterKeypair.publicKey(),
     distributions,
   });
-  return signAndSubmit(extractUnsignedXdr(response, 'resolveDispute'), arbiterKeypair);
+  return signAndSubmitHash(extractUnsignedXdr(response, 'resolveDispute'), arbiterKeypair);
 }
 
 // ── Read escrow state ──────────────────────────────────────────────────────────
 
 export async function getEscrow(contractId: string): Promise<any> {
-  // Try indexer endpoint first, then direct escrow endpoint
-  try {
-    return await twGet(`/escrow/${encodeURIComponent(contractId)}`);
-  } catch {
-    try {
-      return await twGet(`/indexer/get-escrows-by-contract-ids?contractIds=${encodeURIComponent(contractId)}`);
-    } catch {
-      return await twGet(`/escrow/get-escrow-by-contract-id?contractId=${encodeURIComponent(contractId)}`);
-    }
-  }
+  // Confirmed endpoint: GET /helper/get-escrow-by-contract-ids?contractIds[]=$CONTRACT
+  // Returns array; we take the first element.
+  const results = await twGet(
+    `/helper/get-escrow-by-contract-ids?contractIds[]=${encodeURIComponent(contractId)}`
+  );
+  return Array.isArray(results) ? results[0] : results;
 }
 
 // ── Submit a pre-signed XDR (from Freighter) ──────────────────────────────────
 
 export async function submitSignedTransaction(signedXdr: string): Promise<string> {
   try {
-    return await submitToTW(signedXdr);
+    const result = await submitToTW(signedXdr);
+    return result.txHash;
   } catch {
-    return await submitToHorizon(signedXdr);
+    const result = await submitToHorizon(signedXdr);
+    return result.txHash;
   }
 }
