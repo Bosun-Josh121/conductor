@@ -22,9 +22,12 @@
     "build:webintel2": "npx esbuild packages/agents/web-intel-v2/src/server.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=packages/agents/web-intel-v2/dist/server.js",
     "build:analysis": "npx esbuild packages/agents/analysis/src/server.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=packages/agents/analysis/dist/server.js",
     "build:reporter": "npx esbuild packages/agents/reporter/src/server.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=packages/agents/reporter/dist/server.js",
+    "start": "bash scripts/start.sh",
+    "stop": "bash scripts/stop.sh",
     "setup-wallets": "npx tsx scripts/setup-wallets.ts",
     "add-usdc-trustlines": "npx tsx scripts/add-usdc-trustlines.ts",
     "distribute-usdc": "npx tsx scripts/distribute-usdc.ts",
+    "fund-usdc": "npx tsx scripts/fund-usdc.ts",
     "bootstrap": "npx tsx scripts/bootstrap.ts",
     "tw-roundtrip": "npx tsx scripts/tw-roundtrip.ts"
   },
