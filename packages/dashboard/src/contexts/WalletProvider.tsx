@@ -1,7 +1,9 @@
 /**
- * WalletProvider — direct Freighter integration via @stellar/freighter-api.
- * Replaces @creit.tech/stellar-wallets-kit to avoid its complex lit/ESM
- * dependency chain that prevents the vite build from completing.
+ * WalletProvider — Freighter integration via @stellar/freighter-api v6.
+ *
+ * v6 API changes from v5:
+ *   getPublicKey() → getAddress() → { address: string }
+ *   signTransaction() → { signedTxXdr: string }  (was signedTransaction)
  */
 import {
   createContext,
@@ -12,10 +14,11 @@ import {
 } from 'react';
 import {
   isConnected as freighterIsConnected,
-  getPublicKey,
-  signTransaction,
+  getAddress,
+  signTransaction as freighterSignTx,
   isAllowed,
   setAllowed,
+  requestAccess,
 } from '@stellar/freighter-api';
 
 interface WalletContextValue {
@@ -38,29 +41,35 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const saved = localStorage.getItem(LS_PUBKEY);
     if (saved) {
-      freighterIsConnected().then(connected => {
-        if (connected.isConnected) {
-          setPublicKey(saved);
-        } else {
-          localStorage.removeItem(LS_PUBKEY);
-        }
-      }).catch(() => {
-        localStorage.removeItem(LS_PUBKEY);
-      }).finally(() => setIsLoading(false));
+      // Re-verify Freighter still has us connected
+      freighterIsConnected()
+        .then(r => {
+          if (r.isConnected) setPublicKey(saved);
+          else localStorage.removeItem(LS_PUBKEY);
+        })
+        .catch(() => localStorage.removeItem(LS_PUBKEY))
+        .finally(() => setIsLoading(false));
     } else {
       setIsLoading(false);
     }
   }, []);
 
   const connect = async () => {
+    // Ask user to grant access (opens Freighter popup)
     const allowed = await isAllowed();
     if (!allowed.isAllowed) {
-      await setAllowed();
+      const access = await requestAccess();
+      if (access.error) throw new Error(`Freighter: ${access.error}`);
+      const addr = access.publicKey;
+      setPublicKey(addr);
+      localStorage.setItem(LS_PUBKEY, addr);
+      return;
     }
-    const result = await getPublicKey();
-    if (result.error) throw new Error(result.error);
-    setPublicKey(result.publicKey);
-    localStorage.setItem(LS_PUBKEY, result.publicKey);
+    // Already allowed — get address directly
+    const result = await getAddress();
+    if (result.error) throw new Error(`Freighter: ${result.error}`);
+    setPublicKey(result.address);
+    localStorage.setItem(LS_PUBKEY, result.address);
   };
 
   const disconnect = () => {
@@ -70,9 +79,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const signTx = async (xdr: string, networkPassphrase: string): Promise<string> => {
     if (!publicKey) throw new Error('Wallet not connected');
-    const result = await signTransaction(xdr, { networkPassphrase, accountToSign: publicKey });
-    if (result.error) throw new Error(result.error);
-    return result.signedTransaction;
+    // v6: signTransaction returns { signedTxXdr, signerAddress, error? }
+    const result = await freighterSignTx(xdr, { networkPassphrase, address: publicKey });
+    if (result.error) throw new Error(`Freighter sign error: ${result.error}`);
+    return (result as any).signedTxXdr ?? (result as any).signedTransaction ?? '';
   };
 
   return (
