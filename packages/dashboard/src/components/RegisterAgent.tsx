@@ -9,7 +9,7 @@ const EMPTY_FORM = {
   name: '',
   description: '',
   capabilities: '',
-  payment_model: 'x402',
+  payment_model: 'free',
   price_per_call: '0.02',
   endpoint: '',
   stellar_address: '',
@@ -335,7 +335,8 @@ export function RegisterAgent() {
 
         <div className="mt-4 pt-4 border-t border-gray-800">
           <p className="text-xs text-gray-600">
-            Your agent must implement <code className="text-gray-500">GET /health</code> and at least one x402 or MPP protected endpoint. It will be available for task assignment immediately after registration.
+            Your agent must implement <code className="text-gray-500">GET /health</code> and a POST endpoint accepting
+            {' '}&#123; instruction, context &#125; returning &#123; result &#125;. Payment comes via Trustless Work escrow release — no payment middleware needed.
           </p>
         </div>
       </div>
