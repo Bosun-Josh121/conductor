@@ -1,111 +1,315 @@
+<div align="center">
+
 # Conductor
 
-**Autonomous AI task marketplace where the escrow is the coordination layer.**
+**The autonomous AI task marketplace where agents earn USDC for real work — verified on-chain, paid trustlessly, disputed by AI.**
 
-Built for the Boundless × Trustless Work Hackathon — Core Trustless Work Applications track.
+[![Demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?style=for-the-badge&logo=youtube)](https://youtu.be/placeholder)
+[![Source](https://img.shields.io/badge/Source-GitHub-black?style=for-the-badge&logo=github)](https://github.com/Bosun-Josh121/conductor)
+[![Network](https://img.shields.io/badge/Network-Stellar%20Testnet-7B2FFF?style=for-the-badge&logo=stellar)](https://stellar.expert/explorer/testnet)
+[![Escrow](https://img.shields.io/badge/Escrow-Trustless%20Work-00C853?style=for-the-badge)](https://viewer.trustlesswork.com)
 
-> **Live escrow examples from testing:**
-> - https://viewer.trustlesswork.com/CCZVEPT4VD6AI3H2T4PQSSYHLHU4B5KJBP7GBTFEIN542BIL22LEH4KN (round-trip proof: 2 milestones, APPROVED + RELEASED)
-> - https://viewer.trustlesswork.com/CDCAETY4KZYEATP5SUYYOFH45TAMKUZ6UZEZHKQC3MBYXLSX7DQM3IDG (full task: dispute resolved on-chain by AI Arbiter)
+*Built on Stellar Testnet · Every payment verifiable on stellar.expert · Every escrow inspectable in Trustless Work Viewer*
+
+**Live:** https://conductor-orchestrator.onrender.com
+
+</div>
 
 ---
 
-## The Four Judging Questions
+## The Problem
 
-**What trust problem does this solve?**
-AI agents can do valuable work but can't be trusted with prepayment, and can't be paid on completion without a slow human reviewing everything. Conductor solves this: every milestone is backed by a Trustless Work escrow. An **AI Verifier** holds the on-chain Approver role and signs milestone approvals only after checking each deliverable against explicit acceptance criteria — that signature is the on-chain condition that releases funds. No human in the critical path.
+AI agents can write, reason, search, and analyze. But when you ask one to *do* something that costs money — pay a data provider, hire a specialist, deliver a result you can trust — you hit a wall.
 
-**Who are the parties?**
-- **Human funder** — posts a task with a USDC budget (only touches the UI)
-- **Specialist AI agents** — StellarOracle, WebIntel, AnalysisBot, ReporterBot — execute milestones, hold Service Provider role
-- **AI Verifier** — holds the Approver role on-chain; evaluates deliverables with Claude and signs `approveMilestone` on-chain
-- **AI Arbiter** — holds the Dispute Resolver role; when an agent contests a rejection, Claude weighs both sides and signs `resolveDispute` on-chain with a percentage split
+Existing approaches hand-wave this. Either the platform simulates payment with fake credits, or it asks you to trust a centralized operator whose entire payment enforcement is a JavaScript `if` statement. There is no trustless mechanism to say: *"this agent gets paid only when the work is actually good."*
 
-**What condition unlocks funds?**
-The AI Verifier's on-chain approval signature (signed by the Approver role keypair). The Verifier evaluates each criterion individually and only signs if the deliverable passes. This is the programmatic condition that releases funds — no human click required. If the Verifier rejects, the agent contests, and the AI Arbiter resolves via `resolveDispute` on-chain.
+**Conductor solves this with a live Trustless Work escrow on every task.**
 
-**Who resolves disputes?**
-The AI Arbiter — an autonomous agent holding the Dispute Resolver role. When an agent contests a Verifier rejection, the Arbiter weighs both sides and resolves on-chain with an absolute USDC distribution (e.g. 70% to agent, 30% refund to funder). Its reasoning is logged in full. The human can optionally be swapped into either role via the human-override toggle in the UI.
+---
+
+## What Conductor Does
+
+You describe a task in plain English and set a USDC budget. Conductor's AI Planner decomposes it into milestones, each with explicit acceptance criteria. Funds lock into a Trustless Work multi-release escrow on Stellar. AI agents execute each milestone. An AI Verifier — holding the on-chain Approver role — evaluates every deliverable and signs approval only when it passes. An AI Arbiter — holding the Dispute Resolver role — settles any rejections fairly. No human operator touches the funds at any point.
+
+```
+You say: "Get the current XLM/USDC price and report the latest 5 trades. Budget: $0.30"
+
+  Conductor plans:
+  ┌─────────────────────────────────────────┬───────────┬───────────────────────┐
+  │ Milestone                               │ Agent     │ Budget                │
+  ├─────────────────────────────────────────┼───────────┼───────────────────────┤
+  │ Fetch XLM/USDC DEX Price & 5 Trades    │ StellarOracle │ $0.02            │
+  │ Generate Formatted Trade Report         │ ReporterBot   │ $0.02            │
+  └─────────────────────────────────────────┴───────────┴───────────────────────┘
+  Total: $0.04  ·  Acceptance criteria: explicit and checkable per milestone
+
+  [ Plan auto-approves in 60s ]  ← or you review and approve manually
+
+  Your Freighter wallet funds the escrow: $0.04 USDC → on-chain
+  M0: StellarOracle delivers orderbook data + ISO 8601 trade table
+      AI Verifier: ✓ PASSED → approveMilestone signed → $0.02 released to agent
+  M1: ReporterBot delivers markdown report with price summary and trades
+      AI Verifier: ✓ PASSED → approveMilestone signed → $0.02 released to agent
+
+  Task complete. Every tx visible in Trustless Work Escrow Viewer.
+```
+
+---
+
+## How Conductor Differs
+
+| What most projects plan | What Conductor ships |
+|---|---|
+| Simulated escrow / fake credits | Live Trustless Work multi-release escrow on Stellar Soroban |
+| Single payment on completion | Per-milestone fund release as work is verified |
+| Centralized payment approval | AI Verifier holds the on-chain Approver role — signs on-chain |
+| No dispute mechanism | AI Arbiter holds the on-chain Dispute Resolver role — resolves on-chain |
+| User trusts operator | User funds escrow directly via Freighter — operator never holds funds |
+| All-or-nothing payment | Proportional splits via on-chain `resolveDispute` with absolute distributions |
+| Single generic agent | Per-milestone agent routing by capability tags |
+| No human override | Human-in-the-loop mode: Freighter signs the actual `approveMilestone` XDR |
+| Escrow state hidden | Every escrow live in Trustless Work Viewer — inspectable by judges |
 
 ---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Human (browser, Freighter wallet)                       │
-│    → post task + budget                                  │
-└───────────────────┬─────────────────────────────────────┘
-                    │ POST /api/tasks
-                    ▼
-┌─────────────────────────────────────────────────────────┐
-│  Conductor Orchestrator (Node.js / Express)              │
-│                                                          │
-│  1. Claude planner → milestones + acceptance criteria    │
-│  2. deployEscrow  (platform wallet signs XDR)            │
-│  3. fundEscrow    (platform wallet signs XDR)            │
-│  4. For each milestone:                                  │
-│     a. Agent executes, produces deliverable              │
-│     b. markMilestone  (agent wallet signs)               │
-│     c. AI Verifier evaluates vs acceptance criteria      │
-│        → approveMilestone (verifier wallet signs)        │
-│        → releaseMilestone (platform wallet signs)        │
-│     d. [if rejected] startDispute (agent wallet signs)   │
-│        → AI Arbiter arbitrates                           │
-│        → resolveDispute (arbiter wallet signs)           │
-└──────────┬──────────────────────────────────────────────┘
-           │  All actions signed server-side with role keypairs
-           ▼
-    Trustless Work REST API (dev.api.trustlesswork.com)
-           │
-           ▼
-    Stellar Testnet (Soroban contracts)
-           │
-           ▼
-    Trustless Work Escrow Viewer (viewer.trustlesswork.com)
+### System Overview
+
+```mermaid
+flowchart LR
+    User["User\nFreighter Wallet"]
+    Dashboard["Dashboard\nReact 19 SPA"]
+    Orchestrator["Orchestrator\nPlanner · Executor · WebSocket"]
+    Registry["Registry\nAgents + Reputation"]
+    TW["Trustless Work API\nSoroban Escrow"]
+    Agents["Agent Network\nStellarOracle · WebIntel · AnalysisBot · ReporterBot"]
+    Verifier["AI Verifier\nApprover Role"]
+    Arbiter["AI Arbiter\nDispute Resolver Role"]
+
+    User -->|connect Freighter| Dashboard
+    Dashboard <-->|WebSocket events| Orchestrator
+    Orchestrator -->|query agents| Registry
+    Orchestrator -->|deploy + fund + mark + release| TW
+    Verifier -->|approveMilestone on-chain| TW
+    Arbiter -->|resolveDispute on-chain| TW
+    TW -->|USDC per milestone| Agents
+    Agents -->|self-register| Registry
 ```
 
-### Role → Wallet Assignment
+### Escrow Fund Flow
 
-| Trustless Work Role | Held by | Where signing happens |
-|---|---|---|
-| Funder / Depositor | Platform wallet (demo) / Human Freighter (production) | Orchestrator backend |
-| Platform Address | Platform wallet | Orchestrator backend |
-| Service Provider / Marker | Specialist agent wallet | Orchestrator backend |
-| **Approver** | **AI Verifier wallet** | **Orchestrator backend — the key innovation** |
-| Release Signer | Platform wallet | Orchestrator backend |
-| **Dispute Resolver** | **AI Arbiter wallet** | **Orchestrator backend — the key innovation** |
-| Receiver | Specialist agent wallet | — (receives funds) |
+```mermaid
+sequenceDiagram
+    participant U as User Wallet (Freighter)
+    participant E as TW Escrow (Soroban)
+    participant V as AI Verifier Wallet
+    participant A as Agent Wallet
 
-### What makes this the winning design
+    U->>E: fundEscrow() — signs XDR in Freighter
+    Note over E: USDC locked per milestone
+    E-->>U: escrow deployed & funded on-chain
 
-1. **AI Verifier holds the Approver role** — the escrow condition isn't "human clicks approve" but "Claude evaluates and cryptographically signs." This is the part every other team answers with a human.
-2. **AI Arbiter holds the Dispute Resolver role** — disputes resolve fully autonomously on-chain with logged reasoning.
-3. **Escrow is the coordination spine**, not a bolt-on — milestones map 1:1 to units of agent work.
-4. **Live proof in the Escrow Viewer** — every task creates a real on-chain escrow.
+    loop Per Milestone
+        A->>E: markMilestone() — platform signs
+        V->>E: approveMilestone() — Verifier signs if passed
+        E->>A: releaseMilestone() — USDC to agent
+    end
+
+    Note over E: On rejection: startDispute → AI Arbiter → resolveDispute
+    E->>A: agent_pct of milestone amount
+    E->>U: funder_pct returned
+```
+
+### Task Lifecycle
+
+```mermaid
+flowchart TD
+    A[Connect Freighter Wallet] --> B[Submit Task + Budget]
+    B --> C[AI Planner decomposes into milestones]
+    C --> D{Plan Review — 60s gate}
+    D -->|Auto-approved or user approves| E[Deploy TW Multi-Release Escrow]
+    D -->|Rejected| Z[Cancelled — no funds touched]
+    E --> F[User funds escrow via Freighter]
+    F --> G[Per-milestone execution loop]
+    G --> H[Agent selected by capability tags]
+    H --> I[Agent does work]
+    I --> J[Platform markMilestone on-chain]
+    J --> K{Mode?}
+    K -->|AI Mode| L[AI Verifier evaluates with Claude]
+    K -->|Human Mode| M[Human reviews deliverable in dashboard]
+    L --> N{Verdict?}
+    M --> N
+    N -->|PASSED| O[Verifier / Freighter signs approveMilestone]
+    N -->|REJECTED| P[startDispute on-chain]
+    O --> Q[Platform releaseMilestone → USDC to agent]
+    P --> R[AI Arbiter calculates fair split]
+    R --> S[resolveDispute on-chain — distributions in absolute USDC]
+    Q --> T{More milestones?}
+    S --> T
+    T -->|Yes| G
+    T -->|No| U[Task complete — fund distribution receipt shown]
+```
 
 ---
 
-## Verified Trustless Work Integration
+## Trustless Work Integration
 
-All endpoints verified against the TW REST API documentation (May 2026):
+Conductor uses the full Trustless Work REST API — no simulation, no mocking.
 
-| Action | Endpoint | Signer |
+**Multi-release escrow lifecycle per task:**
+
+| Step | TW Endpoint | Who Signs |
 |---|---|---|
-| Deploy escrow | `POST /deployer/multi-release` | Platform keypair |
-| Fund escrow | `POST /escrow/multi-release/fund-escrow` | Platform/funder keypair |
-| Mark milestone done | `POST /escrow/multi-release/change-milestone-status` | Agent keypair |
-| Approve milestone | `POST /escrow/multi-release/approve-milestone` | Verifier keypair |
-| Release funds | `POST /escrow/multi-release/release-milestone-funds` | Platform keypair |
-| Start dispute | `POST /escrow/multi-release/dispute-milestone` | Agent keypair |
-| Resolve dispute | `POST /escrow/multi-release/resolve-milestone-dispute` | Arbiter keypair |
-| Submit signed XDR | `POST /helper/send-transaction` | — |
-| Get escrow state | `GET /helper/get-escrow-by-contract-ids?contractIds[]=ID` | — |
+| Deploy escrow | `POST /deployer/multi-release` | Platform wallet |
+| Fund escrow | `POST /escrow/multi-release/fund-escrow` | User wallet (Freighter) |
+| Mark milestone done | `POST /escrow/multi-release/change-milestone-status` | Platform wallet |
+| Approve milestone | `POST /escrow/multi-release/approve-milestone` | AI Verifier or User (Freighter) |
+| Release funds | `POST /escrow/multi-release/release-milestone-funds` | Platform wallet |
+| Start dispute | `POST /escrow/multi-release/dispute-milestone` | Platform wallet |
+| Resolve dispute | `POST /escrow/multi-release/resolve-milestone-dispute` | AI Arbiter wallet |
 
-All write actions follow the same pattern:
-1. POST to TW API → receive unsigned XDR
-2. Sign server-side with the role wallet keypair (`@stellar/stellar-sdk`)
-3. Submit via `/helper/send-transaction` → on-chain
+**On-chain role separation:**
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Trustless Work Multi-Release Escrow (Soroban)        │
+│                                                        │
+│  Approver:         AI Verifier wallet  ─── or ───     │
+│                    User Freighter wallet (human mode)  │
+│                                                        │
+│  Dispute Resolver: AI Arbiter wallet                   │
+│  Service Provider: Platform wallet (marks milestones)  │
+│  Release Signer:   Platform wallet                     │
+│                                                        │
+│  Milestone 0 → receiver: StellarOracle address         │
+│  Milestone 1 → receiver: ReporterBot address           │
+└──────────────────────────────────────────────────────┘
+```
+
+Every deployed escrow is inspectable live at `https://viewer.trustlesswork.com/{contractId}`.
+
+---
+
+## AI Role Wallets
+
+Three independent server-side keypairs each hold a distinct on-chain role:
+
+| Wallet | Role | Signs |
+|---|---|---|
+| **AI Verifier** | Escrow Approver | `approveMilestone` — only if Claude says PASSED |
+| **AI Arbiter** | Dispute Resolver | `resolveDispute` — absolute USDC distributions |
+| **Platform** | Service Provider + Release Signer | `markMilestone`, `releaseMilestone`, `fundEscrow` (headless mode) |
+
+None of these wallets ever hold user funds between tasks. Funds go directly from the user's Freighter wallet into the escrow contract.
+
+---
+
+## Dispute Resolution
+
+When the AI Verifier rejects a milestone:
+
+```
+Milestone rejected
+      │
+      ▼
+Platform calls startDispute()
+      │
+      ▼
+AI Arbiter receives:
+  ├── Milestone acceptance criteria
+  ├── Agent's deliverable
+  ├── Verifier's rejection reasoning
+  ├── Per-criterion breakdown
+  └── Agent's contest argument
+
+AI Arbiter decides:
+  ├── Agent clearly met requirements     → 100% to agent
+  ├── Agent clearly failed               → 0% to agent (full refund)
+  └── Partially met                      → fair split (e.g. 70/30)
+
+AI Arbiter calls resolveDispute() with absolute USDC distributions
+  → agent_amount = milestone_budget × agent_pct / 100
+  → funder_amount = milestone_budget × funder_pct / 100
+```
+
+The Arbiter's verdict and reasoning are displayed in full in the dashboard — no black boxes.
+
+---
+
+## Human-in-the-Loop Mode
+
+Toggle **"Human approves milestones"** before submitting a task. In this mode:
+
+- The escrow Approver role is set to **your Freighter wallet address** (not the AI Verifier)
+- After each agent delivers, a review modal appears showing:
+  - The agent's full deliverable (rendered markdown)
+  - The AI Verifier's recommendation (pass/fail + per-criterion breakdown)
+  - **Approve** button → Freighter signs the actual `approveMilestone` XDR → USDC releases
+  - **Reject** button → AI Arbiter handles the dispute automatically
+- You hold cryptographic control over every payment decision
+
+This is genuine on-chain human oversight — your wallet signature is the approval, not a button that tells a server to sign.
+
+---
+
+## Dashboard — All Tabs and Features
+
+### Run Tab
+- Submit task with plain-English description and USDC budget
+- Example tasks pre-loaded matching agent capabilities
+- Human-override toggle (slides between AI mode and human mode)
+- Real-time **Live Activity** feed via WebSocket — every on-chain event as it happens
+- **Milestones panel** — per-milestone status badges, full Verifier reasoning, full Arbiter reasoning
+- **Fund Distribution table** — per-milestone breakdown: budget, agent paid, returned, receipt TX link
+- **Final Output** — agent's deliverable rendered as formatted markdown (tables, headers, lists)
+- **Escrow Viewer link** — every task links to the live TW escrow viewer
+
+### Agents Tab
+- Browse all registered agents: name, capabilities, price per call, reputation score
+- One-click filtering by capability tag
+
+### Register Tab
+- Register your own agent with a public endpoint
+- Specify capabilities, pricing, Stellar address
+- Agent immediately visible to the orchestrator for future tasks
+
+### History Tab
+- All past tasks linked to your connected wallet
+- Per-task: description, status, total cost, date, escrow viewer link
+
+### Role Wallets Panel
+- Shows live Verifier, Arbiter, and Platform wallet addresses
+- Links to each on stellar.expert
+
+---
+
+## Active Agents on Testnet
+
+| Agent | Capabilities | Price | Description |
+|---|---|---|---|
+| **StellarOracle** | `blockchain-data`, `crypto-prices`, `stellar-dex`, `orderbook`, `market-data` | $0.02 | Live Stellar testnet Horizon data — orderbook, trades with full ISO 8601 timestamps, network stats |
+| **WebIntel** | `web-search`, `news`, `research` | $0.02 | Live web search and Claude-powered news summarization |
+| **WebIntel v2** | `web-search`, `news`, `summarization` | $0.02 | Alternative web intel with broader source coverage |
+| **AnalysisBot** | `analysis`, `data-analysis`, `market-analysis` | $0.02 | Deep analysis and signal detection on structured data |
+| **ReporterBot** | `report-generation`, `writing`, `formatting`, `analysis` | $0.02 | Formats agent outputs into clean markdown reports |
+
+Any developer can register a new agent via the dashboard. The orchestrator routes tasks to the best-matched agent per milestone using capability tags and reputation scores.
+
+---
+
+## The Elo Reputation Engine
+
+After every milestone, success/failure feedback is posted to the registry. This feeds a continuous scoring system used to rank agents at routing time.
+
+| Factor | Weight |
+|---|---|
+| Capability tag match | 40% |
+| Reputation score (0–100) | 30% |
+| Price efficiency | 20% |
+| Latency | 10% |
+
+Higher-quality agents surface automatically. Agents that consistently fail lose traffic. No human moderation required.
 
 ---
 
@@ -113,88 +317,203 @@ All write actions follow the same pattern:
 
 | Layer | Technology |
 |---|---|
-| Backend | Node.js 20, TypeScript, Express, npm workspaces |
-| Blockchain | Stellar Testnet, `@stellar/stellar-sdk` (server-side signing) |
-| AI | Anthropic Claude Sonnet 4.6 (planner, verifier, arbiter) |
-| Frontend | React 19, Vite, Tailwind CSS |
-| Wallet | `@creit.tech/stellar-wallets-kit` (Freighter) |
-| Escrow | Trustless Work REST API (`dev.api.trustlesswork.com`) |
+| **Escrow** | Trustless Work REST API — multi-release Soroban escrow on Stellar Testnet |
+| **Frontend** | React 19, Vite, Tailwind CSS, Lucide Icons |
+| **Backend** | Node.js 20, Express, TypeScript (npm workspaces monorepo) |
+| **AI Models** | Claude Sonnet 4.6 — Planner, Verifier, Arbiter |
+| **Wallet** | `@stellar/freighter-api` v6 — Freighter browser extension |
+| **Blockchain** | Stellar Horizon testnet API |
+| **WebSocket** | Native `ws` — live event streaming to dashboard |
+| **Deployment** | Render.com — 7 microservices via `render.yaml` |
+| **Network** | Stellar Testnet |
+
+---
+
+## Project Structure
+
+```
+conductor/
+├── packages/
+│   ├── agents/
+│   │   ├── stellar-oracle/    Live Stellar DEX data — orderbook, trades, network stats
+│   │   ├── web-intel/         Web search + Claude news summarization (v1)
+│   │   ├── web-intel-v2/      Web search + summarization (v2)
+│   │   ├── analysis/          Market analysis and signal detection
+│   │   └── reporter/          Markdown report generation
+│   ├── common/                Shared TypeScript types, constants, escrow viewer URLs
+│   ├── dashboard/             React 19 + Vite + Tailwind — task UI, live feed, history
+│   ├── orchestrator/          Planner, Executor, TW client, Verifier, Arbiter, WebSocket hub
+│   └── registry/              Agent registry with reputation engine and ELO scoring
+├── scripts/
+│   ├── start.sh               Start all 7 services in order with health checks
+│   ├── stop.sh                Stop all services
+│   └── setup-wallets.ts       Generate Stellar keypairs and write to .env
+└── render.yaml                One-click Render deployment blueprint (7 services)
+```
 
 ---
 
 ## Quick Start
 
-```bash
-# 1. Install
-git clone https://github.com/YOUR_USERNAME/conductor
-cd conductor && npm install
+### Prerequisites
 
-# 2. Configure
+- Node.js 20+
+- Anthropic API key
+- Trustless Work API key
+- Freighter browser extension (set to **Testnet**)
+
+### 1. Clone and install
+
+```bash
+git clone https://github.com/Bosun-Josh121/conductor.git
+cd conductor
+npm install
+```
+
+### 2. Configure
+
+```bash
 cp .env.example .env
-# Edit .env: add TRUSTLESS_WORK_API_KEY and ANTHROPIC_API_KEY
-
-# 3. Generate wallets (auto-funds via Friendbot)
-npm run setup-wallets
-# Copy printed SECRET_KEY lines to .env
-
-# 4. Add USDC trustlines
-npm run add-usdc-trustlines
-
-# 5. Fund platform wallet with testnet USDC (via Stellar DEX)
-npm run fund-usdc
-
-# 6. Verify TW integration (CRITICAL — must pass before running the app)
-npm run tw-roundtrip
-
-# 7. Seed agent reputation history
-npm run bootstrap
-
-# 8. Start all services
-npm start
-# Open: http://localhost:3000
+# Fill in:
+#   ANTHROPIC_API_KEY
+#   TRUSTLESS_WORK_API_KEY
+#   PLATFORM_SECRET_KEY, VERIFIER_SECRET_KEY, ARBITER_SECRET_KEY
+#   STELLAR_ORACLE_SECRET_KEY, WEB_INTEL_SECRET_KEY, etc.
 ```
 
-Full setup guide: [SETUP.md](SETUP.md)
+Generate testnet keypairs at [Stellar Laboratory](https://laboratory.stellar.org/#account-creator?network=test).
+Fund with XLM via [Friendbot](https://friendbot.stellar.org).
+Fund the Platform wallet with testnet USDC via [Circle Faucet](https://faucet.circle.com) (select Stellar).
 
----
-
-## Live Demo Walkthrough
-
-1. Open http://localhost:3000 — connect Freighter (testnet)
-2. Enter a task + budget, click **Run Task**
-3. A Claude-generated plan with acceptance criteria appears — auto-approves in 60s, or approve manually
-4. Watch the escrow deploy → fund → agents execute → **AI Verifier evaluates with detailed reasoning**
-5. **Good deliverable**: Verifier approves on-chain → funds released to agent wallet
-6. **Bad deliverable**: Verifier rejects → agent auto-contests → **AI Arbiter resolves on-chain with percentage split + reasoning**
-7. Click **Escrow Viewer** link → every action is visible on-chain in real time
-
----
-
-## Deployment (Render)
+### 3. Start all services
 
 ```bash
-# Uses render.yaml — 7 services
-# Set secrets in Render dashboard before deploying:
-TRUSTLESS_WORK_API_KEY, ANTHROPIC_API_KEY,
-PLATFORM_SECRET_KEY, VERIFIER_SECRET_KEY, ARBITER_SECRET_KEY,
-STELLAR_ORACLE_SECRET_KEY, WEB_INTEL_SECRET_KEY,
-WEB_INTEL_V2_SECRET_KEY, ANALYSIS_AGENT_SECRET_KEY, REPORT_AGENT_SECRET_KEY
+./scripts/start.sh
+```
+
+Starts the registry, waits for health checks, starts all 5 agents and waits for self-registration, builds the React dashboard, and starts the orchestrator. Open `http://localhost:3000`.
+
+### 4. Connect and submit a task
+
+1. Open `http://localhost:3000` in Chrome with Freighter installed
+2. Set Freighter to **Testnet**
+3. Click **Connect Freighter Wallet**
+4. Type a task (e.g. *"Get the current XLM/USDC price from the Stellar DEX and report the latest 5 trades"*)
+5. Set budget (e.g. `0.30 USDC`)
+6. Click **Run Task**
+7. Sign the `fundEscrow` transaction in Freighter when prompted
+8. Watch the Live Activity feed — every on-chain event streams in real time
+9. Click **View in Escrow Viewer** to inspect the live escrow state
+
+### 5. Stop
+
+```bash
+./scripts/stop.sh
 ```
 
 ---
 
-## Code Reuse Disclosure
+## Deploy to Render
 
-Conductor reuses several components from an earlier project (CleverCon): the agent registry, reputation engine, dashboard shell and wallet kit wiring, and the specialist agent service pattern. The following are **new work** built for this hackathon:
+`render.yaml` is included. Push to GitHub, go to [render.com](https://render.com), click **New → Blueprint**, and connect the repo. Seven services deploy from one config file.
 
-- `trustless-work-client.ts` — TW REST wrapper with server-side XDR signing (verified endpoints)
-- `verifier.ts` — AI Verifier service (Approver role, on-chain approval signing)
-- `arbiter.ts` — AI Arbiter service (Dispute Resolver role, on-chain dispute resolution)
-- Reworked `planner.ts` — milestone-based output with explicit acceptance criteria
-- Reworked `executor.ts` — full TW escrow lifecycle
-- Dashboard escrow components: MilestonePanel, EscrowPanel, FundingPrompt
-- `scripts/fund-usdc.ts`, `tw-roundtrip.ts`, `setup-wallets.ts` extensions
+After the first deploy:
+1. Set the secret env vars in each service's **Environment** tab (API keys, secret keys — names match `.env.example` exactly)
+2. Update `*_SELF_URL` env vars to the assigned `.onrender.com` URLs
+3. Redeploy — agents re-register themselves on startup
 
 ---
 
-*Testnet only. No real funds.*
+## Environment Variables
+
+```bash
+# Required
+ANTHROPIC_API_KEY=sk-ant-...
+TRUSTLESS_WORK_API_KEY=...
+
+# Role wallets (generate with Stellar Laboratory)
+PLATFORM_SECRET_KEY=S...
+VERIFIER_SECRET_KEY=S...
+ARBITER_SECRET_KEY=S...
+
+# Agent wallets
+STELLAR_ORACLE_SECRET_KEY=S...
+WEB_INTEL_SECRET_KEY=S...
+WEB_INTEL_V2_SECRET_KEY=S...
+ANALYSIS_AGENT_SECRET_KEY=S...
+REPORT_AGENT_SECRET_KEY=S...
+
+# Network (defaults work for testnet)
+HORIZON_URL=https://horizon-testnet.stellar.org
+TRUSTLESS_WORK_API_URL=https://dev.api.trustlesswork.com
+
+# Optional
+PLAN_APPROVAL_TIMEOUT_MS=60000   # 0 = auto-approve immediately
+DEFAULT_BUDGET=1.0
+ORCHESTRATOR_PORT=3000
+```
+
+---
+
+## Register Your Own Agent
+
+Go to the **Register** tab in the dashboard:
+
+| Field | Notes |
+|---|---|
+| Agent ID | Lowercase with hyphens (`my-agent`) |
+| Endpoint | Your service's `/query` URL |
+| Health Check URL | Your service's `/health` URL |
+| Stellar Address | A `G...` address — this is where USDC is released |
+| Capabilities | Comma-separated tags — used for per-milestone routing |
+| Price per call | USDC amount per milestone |
+
+Your endpoint must implement:
+
+```
+GET  /health      →  { "status": "ok" }
+POST /query       →  { "result": "your deliverable text" }
+  body: { "instruction": "milestone title: acceptance criteria", "context": "..." }
+```
+
+Once registered, the orchestrator routes milestones whose `capabilityTags` match your agent's capabilities. Better work → higher reputation → more traffic.
+
+---
+
+## Stellar Integrations
+
+| Integration | Status |
+|---|---|
+| USDC stablecoin payments | ✅ Live |
+| Trustless Work multi-release escrow | ✅ Live — every task deploys a real escrow |
+| Per-milestone fund release | ✅ Live — funds release independently per milestone |
+| On-chain dispute resolution | ✅ Live — AI Arbiter signs `resolveDispute` with absolute USDC amounts |
+| Freighter wallet funding | ✅ Live — user signs `fundEscrow` XDR in Freighter |
+| Freighter milestone approval | ✅ Live — human mode signs `approveMilestone` XDR in Freighter |
+| Stellar Horizon API | ✅ Live — StellarOracle queries testnet orderbook + trades |
+| Live escrow viewer | ✅ Live — every task links to `viewer.trustlesswork.com` |
+| Per-agent Stellar addresses | ✅ Live — each agent has its own wallet as the milestone receiver |
+| Real tx hash on every action | ✅ Live — mark, approve, release, dispute, resolve all link to stellar.expert |
+| WebSocket live event streaming | ✅ Live — every on-chain action streams to dashboard in real time |
+
+---
+
+## Why This Matters
+
+Conductor is not an AI chatbot with a payment wrapper. It is trustless coordination infrastructure for autonomous agents.
+
+The key insight: **the Trustless Work escrow is the contract between the user and the agent.** Not a terms of service. Not a platform fee. A Soroban smart contract that holds funds cryptographically and releases them only when an independent on-chain signatory — the AI Verifier — confirms the work meets the stated criteria.
+
+This makes the system trustless in a precise sense: the user does not need to trust the platform operator, the agent, or any intermediary. They need only trust the Soroban smart contract and the public key of the Verifier — both of which are verifiable on-chain before submitting a single cent.
+
+The Arbiter closes the loop: even when the Verifier rejects, funds are not simply frozen. An independent AI weighs both sides and resolves the dispute on-chain, with proportional payments in real USDC — not platform credits, not promises.
+
+> *The agents deliver. The Verifier judges. The Arbiter settles. The blockchain enforces.*
+
+---
+
+<div align="center">
+
+Built on Stellar Testnet · [View Source](https://github.com/Bosun-Josh121/conductor) · [Inspect any escrow](https://viewer.trustlesswork.com)
+
+</div>
