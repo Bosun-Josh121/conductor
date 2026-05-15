@@ -1,10 +1,3 @@
-/**
- * WalletProvider — Freighter integration via @stellar/freighter-api v6.
- *
- * v6 API changes from v5:
- *   getPublicKey() → getAddress() → { address: string }
- *   signTransaction() → { signedTxXdr: string }  (was signedTransaction)
- */
 import {
   createContext,
   useContext,
@@ -17,7 +10,6 @@ import {
   getAddress,
   signTransaction as freighterSignTx,
   isAllowed,
-  setAllowed,
   requestAccess,
 } from '@stellar/freighter-api';
 
@@ -31,7 +23,6 @@ interface WalletContextValue {
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null);
-
 const LS_PUBKEY = 'conductor_pubkey';
 
 export function WalletProvider({ children }: { children: ReactNode }) {
@@ -41,12 +32,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const saved = localStorage.getItem(LS_PUBKEY);
     if (saved) {
-      // Re-verify Freighter still has us connected
       freighterIsConnected()
-        .then(r => {
-          if (r.isConnected) setPublicKey(saved);
-          else localStorage.removeItem(LS_PUBKEY);
-        })
+        .then(r => { if (r.isConnected) setPublicKey(saved); else localStorage.removeItem(LS_PUBKEY); })
         .catch(() => localStorage.removeItem(LS_PUBKEY))
         .finally(() => setIsLoading(false));
     } else {
@@ -55,17 +42,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = async () => {
-    // Ask user to grant access (opens Freighter popup)
     const allowed = await isAllowed();
     if (!allowed.isAllowed) {
+      // Opens Freighter popup to grant access
       const access = await requestAccess();
       if (access.error) throw new Error(`Freighter: ${access.error}`);
-      const addr = access.publicKey;
+      // requestAccess v6 returns { address } (not publicKey)
+      const addr = (access as any).address ?? (access as any).publicKey ?? '';
+      if (!addr) throw new Error('Freighter returned no address');
       setPublicKey(addr);
       localStorage.setItem(LS_PUBKEY, addr);
       return;
     }
-    // Already allowed — get address directly
+    // Already allowed
     const result = await getAddress();
     if (result.error) throw new Error(`Freighter: ${result.error}`);
     setPublicKey(result.address);
@@ -79,21 +68,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const signTx = async (xdr: string, networkPassphrase: string): Promise<string> => {
     if (!publicKey) throw new Error('Wallet not connected');
-    // v6: signTransaction returns { signedTxXdr, signerAddress, error? }
     const result = await freighterSignTx(xdr, { networkPassphrase, address: publicKey });
-    if (result.error) throw new Error(`Freighter sign error: ${result.error}`);
+    if (result.error) throw new Error(`Freighter: ${result.error}`);
+    // v6 uses signedTxXdr; v5 used signedTransaction
     return (result as any).signedTxXdr ?? (result as any).signedTransaction ?? '';
   };
 
   return (
-    <WalletContext.Provider value={{
-      publicKey,
-      isConnected: !!publicKey,
-      isLoading,
-      connect,
-      disconnect,
-      signTransaction: signTx,
-    }}>
+    <WalletContext.Provider value={{ publicKey, isConnected: !!publicKey, isLoading, connect, disconnect, signTransaction: signTx }}>
       {children}
     </WalletContext.Provider>
   );
@@ -101,6 +83,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
 export function useWallet(): WalletContextValue {
   const ctx = useContext(WalletContext);
-  if (!ctx) throw new Error('useWallet must be used inside WalletProvider');
+  if (!ctx) throw new Error('useWallet must be inside WalletProvider');
   return ctx;
 }

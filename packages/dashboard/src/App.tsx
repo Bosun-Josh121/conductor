@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Music, Zap, Bot, History, PlusCircle, LogOut, ExternalLink,
-  AlertTriangle, Shield
+  Music2, Zap, Bot, History, PlusCircle, LogOut, ExternalLink,
+  AlertTriangle, Shield, CheckCircle, XCircle, Radio,
 } from 'lucide-react';
 import { WalletProvider, useWallet } from './contexts/WalletProvider';
 import { ToastProvider, useToast } from './contexts/ToastContext';
@@ -22,11 +22,50 @@ import { approveTask, rejectTask, submitTask, confirmFunding } from './lib/api';
 type Page = 'run' | 'agents' | 'history' | 'register';
 
 const NAV: Array<{ id: Page; label: string; icon: React.ReactNode }> = [
-  { id: 'run',      label: 'Run',      icon: <Zap size={12} /> },
-  { id: 'agents',   label: 'Agents',   icon: <Bot size={12} /> },
-  { id: 'history',  label: 'History',  icon: <History size={12} /> },
-  { id: 'register', label: 'Register', icon: <PlusCircle size={12} /> },
+  { id: 'run',      label: 'Run',      icon: <Zap size={11} /> },
+  { id: 'agents',   label: 'Agents',   icon: <Bot size={11} /> },
+  { id: 'history',  label: 'History',  icon: <History size={11} /> },
+  { id: 'register', label: 'Register', icon: <PlusCircle size={11} /> },
 ];
+
+function RoleWallets() {
+  const [wallets, setWallets] = useState<any>(null);
+  useEffect(() => {
+    fetch('/api/wallets').then(r => r.json()).then(setWallets).catch(() => {});
+  }, []);
+  if (!wallets) return null;
+
+  return (
+    <div className="bg-gray-900/40 border border-gray-800/50 rounded-xl p-3 space-y-2">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+        <Shield size={9} className="text-emerald-600" />
+        AI Role Wallets
+      </p>
+      {[
+        { label: 'Verifier', role: 'Approver', address: wallets.verifier?.address, color: 'text-emerald-500' },
+        { label: 'Arbiter', role: 'Dispute Resolver', address: wallets.arbiter?.address, color: 'text-amber-500' },
+        { label: 'Platform', role: 'Release Signer', address: wallets.platform?.address, color: 'text-gray-500' },
+      ].map(r => (
+        <div key={r.label} className="flex items-start justify-between gap-2">
+          <div>
+            <p className={`text-xs font-medium ${r.color}`}>{r.label}</p>
+            <p className="text-xs text-gray-700">{r.role}</p>
+          </div>
+          {r.address && (
+            <a
+              href={`https://stellar.expert/explorer/testnet/account/${r.address}`}
+              target="_blank" rel="noreferrer"
+              className="text-xs text-gray-700 hover:text-gray-400 font-mono flex items-center gap-0.5"
+            >
+              {r.address.slice(0, 4)}…{r.address.slice(-4)}
+              <ExternalLink size={7} />
+            </a>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function Dashboard() {
   const { publicKey, disconnect } = useWallet();
@@ -57,114 +96,121 @@ function Dashboard() {
     }
   }, [publicKey, clearEvents, addToast, humanOverride]);
 
-  // Process WebSocket events
   useEffect(() => {
     const e = events[0];
     if (!e) return;
-
     if (['task_complete', 'task_error', 'task_result', 'task_infeasible'].includes(e.event)) {
       setIsRunning(false);
       setFundingInfo(null);
     }
     if (e.event === 'plan_approval_required') setPendingPlan(e.data as PendingPlan);
     if (['plan_approved', 'plan_rejected', 'plan_auto_approved'].includes(e.event)) setPendingPlan(null);
-
     if (e.event === 'funding_required') {
-      setFundingInfo({
-        task_id: e.data?.task_id ?? '',
-        contract_id: e.data?.contract_id ?? '',
-        viewer_url: e.data?.viewer_url ?? '',
-        total_usdc: e.data?.total_usdc ?? 0,
-      });
+      setFundingInfo({ task_id: e.data?.task_id ?? '', contract_id: e.data?.contract_id ?? '', viewer_url: e.data?.viewer_url ?? '', total_usdc: e.data?.total_usdc ?? 0 });
     }
     if (e.event === 'escrow_funded') setFundingInfo(null);
-
     if (e.event === 'task_result') {
       setHasResult(true);
       const r = e.data;
-      if (r?.status === 'complete')
-        addToast(`Complete — $${r.total_cost?.toFixed(4)} USDC | ${r.escrow_viewer_url ? 'View in Escrow Viewer' : ''}`, 'success');
-      else if (r?.status === 'partial')
-        addToast('Partially completed — some milestones failed', 'warning');
+      if (r?.status === 'complete') addToast(`Done — $${r.total_cost?.toFixed(4)} USDC`, 'success');
+      else if (r?.status === 'partial') addToast('Partial — some milestones failed', 'warning');
     }
-    if (e.event === 'task_error')
-      addToast(`Task failed: ${e.data?.error ?? 'unknown'}`, 'error');
+    if (e.event === 'task_error') addToast(`Failed: ${e.data?.error ?? 'unknown'}`, 'error');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 
   const handleFundingConfirm = async (taskId: string) => {
     try {
       await confirmFunding(taskId);
-      addToast('Funding confirmed — execution resuming', 'success');
+      addToast('Funding confirmed', 'success');
       setFundingInfo(null);
     } catch (err: any) {
-      addToast(`Funding confirm failed: ${err.message}`, 'error');
+      addToast(`Error: ${err.message}`, 'error');
     }
   };
 
+  const escrowUrl = events.find(e => e.event === 'escrow_deployed')?.data?.viewer_url
+    || events.find(e => e.event === 'task_result')?.data?.escrow_viewer_url;
+
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-200 flex flex-col">
+    <div className="min-h-screen bg-[#080c10] text-gray-200 flex flex-col">
 
-      {/* Header */}
-      <header className="sticky top-0 z-20 bg-gray-950/95 backdrop-blur-xl border-b border-gray-800/80 shrink-0">
-        <div className="max-w-screen-xl mx-auto px-4 flex items-center gap-3 h-12">
+      {/* ── Header ── */}
+      <header className="sticky top-0 z-20 bg-[#080c10]/95 backdrop-blur-xl border-b border-gray-800/60 shrink-0">
+        <div className="max-w-screen-xl mx-auto px-5 flex items-center gap-3 h-11">
 
+          {/* Brand */}
           <div className="flex items-center gap-2 shrink-0">
-            <div className="w-6 h-6 bg-gradient-to-br from-violet-600 to-indigo-700 rounded-md flex items-center justify-center">
-              <Music size={11} className="text-white" />
+            <div className="w-6 h-6 bg-gradient-to-br from-emerald-600 to-teal-700 rounded-md flex items-center justify-center">
+              <Music2 size={11} className="text-white" />
             </div>
-            <span className="text-sm font-bold text-white">Conductor</span>
-            <span className="text-xs text-gray-600 hidden md:block">AI Task Marketplace</span>
+            <span className="text-sm font-bold tracking-tight text-white">Conductor</span>
+            <span className="text-xs text-gray-700 hidden md:block">/ AI escrow marketplace</span>
           </div>
 
+          {/* Status pills */}
           {isRunning && (
-            <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-md bg-violet-950/60 border border-violet-900/60 text-xs text-violet-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />
+            <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-900/50 text-xs text-emerald-400">
+              <Radio size={8} className="animate-pulse" />
               Agents working
             </div>
           )}
-          {fundingInfo && (
-            <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-md bg-amber-950/60 border border-amber-900/60 text-xs text-amber-400">
-              <AlertTriangle size={9} className="animate-pulse" />
-              Awaiting funding
+          {pendingPlan && !isRunning && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-950/60 border border-blue-900/50 text-xs text-blue-400">
+              <Zap size={8} className="animate-pulse" />
+              Plan ready
             </div>
           )}
-          {pendingPlan && !isRunning && (
-            <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-md bg-violet-950/60 border border-violet-900/60 text-xs text-violet-400">
-              <Zap size={9} className="animate-pulse" />
-              Plan ready for review
+          {fundingInfo && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-900/50 text-xs text-amber-400">
+              <AlertTriangle size={8} />
+              Awaiting escrow fund
             </div>
           )}
 
           <div className="flex-1" />
 
-          <nav className="hidden sm:flex items-center gap-0.5">
+          {/* Escrow viewer shortcut when active */}
+          {escrowUrl && (
+            <a
+              href={escrowUrl}
+              target="_blank" rel="noreferrer"
+              className="hidden md:flex items-center gap-1 text-xs text-emerald-500 hover:text-emerald-400 transition-colors"
+            >
+              <ExternalLink size={9} />
+              Escrow Viewer
+            </a>
+          )}
+
+          {/* Nav */}
+          <nav className="flex items-center gap-0.5">
             {NAV.map(n => (
               <button
                 key={n.id}
                 onClick={() => setPage(n.id)}
-                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
                   page === n.id
                     ? 'bg-gray-800 text-white'
-                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
+                    : 'text-gray-600 hover:text-gray-300 hover:bg-gray-800/40'
                 }`}
               >
                 {n.icon}
-                {n.label}
+                <span className="hidden sm:inline">{n.label}</span>
                 {n.id === 'run' && hasResult && !isRunning && (
-                  <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 )}
               </button>
             ))}
           </nav>
 
-          <div className="flex items-center gap-2 pl-3 border-l border-gray-800 shrink-0">
-            <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-500 animate-pulse'}`} />
+          {/* Wallet */}
+          <div className="flex items-center gap-2 pl-3 border-l border-gray-800/60 shrink-0">
+            <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-600 animate-pulse'}`} />
             {publicKey && (
               <>
-                <span className="text-xs text-gray-600 font-mono hidden md:block">{publicKey.slice(0, 4)}…{publicKey.slice(-4)}</span>
-                <button onClick={disconnect} title="Disconnect" className="text-gray-700 hover:text-gray-400 transition-colors">
-                  <LogOut size={12} />
+                <span className="text-xs text-gray-600 font-mono hidden lg:block">{publicKey.slice(0, 4)}…{publicKey.slice(-4)}</span>
+                <button onClick={disconnect} title="Disconnect wallet" className="text-gray-700 hover:text-gray-400 transition-colors">
+                  <LogOut size={11} />
                 </button>
               </>
             )}
@@ -172,56 +218,42 @@ function Dashboard() {
         </div>
       </header>
 
-      {/* Pages */}
-      <main className="flex-1 max-w-screen-xl w-full mx-auto px-4 py-6">
+      {/* ── Pages ── */}
+      <main className="flex-1 max-w-screen-xl w-full mx-auto px-4 py-5">
 
         {page === 'run' && (
-          <div className="flex flex-col gap-5">
-            <div className="grid grid-cols-12 gap-4 items-start">
+          <div className="grid grid-cols-12 gap-4 items-start">
+            {/* Left col: task input */}
+            <div className="col-span-12 lg:col-span-4 xl:col-span-3 space-y-3">
+              <TaskInput
+                onSubmit={handleSubmit}
+                isRunning={isRunning}
+                humanOverride={humanOverride}
+                onHumanOverrideChange={setHumanOverride}
+              />
+              <RoleWallets />
+            </div>
 
-              {/* Left: task input */}
-              <div className="col-span-12 lg:col-span-4 space-y-3">
-                <TaskInput
-                  onSubmit={handleSubmit}
-                  isRunning={isRunning}
-                  humanOverride={humanOverride}
-                  onHumanOverrideChange={setHumanOverride}
-                />
-              </div>
+            {/* Center col: live feed */}
+            <div className="col-span-12 lg:col-span-5 xl:col-span-6 space-y-3">
+              <ActivityFeed events={events} connected={connected} onClear={clearEvents} />
+              {hasResult && <MilestonePanel events={events} />}
+            </div>
 
-              {/* Center: live activity feed + milestones */}
-              <div className="col-span-12 lg:col-span-5 space-y-4">
-                <ActivityFeed
-                  events={events}
-                  connected={connected}
-                  onClear={clearEvents}
-                />
-                {hasResult && <MilestonePanel events={events} />}
-              </div>
-
-              {/* Right: escrow panel */}
-              <div className="col-span-12 lg:col-span-3 space-y-4">
-                <EscrowPanel events={events} />
-                <RoleWallets />
-              </div>
+            {/* Right col: escrow */}
+            <div className="col-span-12 lg:col-span-3 space-y-3">
+              <EscrowPanel events={events} />
+              <EscrowStats events={events} isRunning={isRunning} />
             </div>
           </div>
         )}
 
-        {page === 'agents' && (
-          <AgentsPage onRegisterClick={() => setPage('register')} />
-        )}
-
+        {page === 'agents' && <AgentsPage onRegisterClick={() => setPage('register')} />}
         {page === 'history' && <TaskHistory />}
-
-        {page === 'register' && (
-          <div className="max-w-2xl mx-auto">
-            <RegisterAgent />
-          </div>
-        )}
+        {page === 'register' && <div className="max-w-2xl mx-auto"><RegisterAgent /></div>}
       </main>
 
-      {/* Modals */}
+      {/* ── Modals ── */}
       {pendingPlan && (
         <PlanApproval
           plan={pendingPlan}
@@ -230,7 +262,6 @@ function Dashboard() {
           onDismiss={() => setPendingPlan(null)}
         />
       )}
-
       {fundingInfo && (
         <FundingPrompt
           taskId={fundingInfo.task_id}
@@ -241,67 +272,64 @@ function Dashboard() {
           onDismiss={() => setFundingInfo(null)}
         />
       )}
-
       <ToastContainer />
     </div>
   );
 }
 
-// Show role wallet addresses
-function RoleWallets() {
-  const [wallets, setWallets] = useState<any>(null);
+// Live task stats strip shown in right column
+function EscrowStats({ events, isRunning }: { events: any[]; isRunning: boolean }) {
+  const result = events.find(e => e.event === 'task_result')?.data;
+  const deployed = events.find(e => e.event === 'escrow_deployed');
 
-  useEffect(() => {
-    fetch('/api/wallets').then(r => r.json()).then(setWallets).catch(() => {});
-  }, []);
+  if (!deployed && !isRunning) return null;
 
-  if (!wallets) return null;
-
-  const roles = [
-    { label: 'Platform', role: 'releaseSigner', address: wallets.platform?.address },
-    { label: 'Verifier', role: 'approver', address: wallets.verifier?.address },
-    { label: 'Arbiter', role: 'disputeResolver', address: wallets.arbiter?.address },
-  ];
+  const milestones = events.filter(e => e.event === 'milestone_started');
+  const released   = events.filter(e => e.event === 'milestone_released');
+  const rejected   = events.filter(e => e.event === 'milestone_rejected');
+  const disputes   = events.filter(e => e.event === 'dispute_resolved');
 
   return (
-    <div className="bg-gray-900/60 border border-gray-800/60 rounded-xl p-3 space-y-2">
-      <p className="text-xs font-semibold text-gray-400 flex items-center gap-1.5">
-        <Shield size={10} className="text-violet-500" />
-        Role Wallets
-      </p>
-      {roles.map(r => (
-        <div key={r.label} className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-300">{r.label}</p>
-            <p className="text-xs text-gray-600">{r.role}</p>
+    <div className="bg-gray-900/40 border border-gray-800/50 rounded-xl p-3 space-y-2">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">This Run</p>
+      <div className="grid grid-cols-2 gap-1.5">
+        {[
+          { label: 'Milestones', value: milestones.length, icon: <Zap size={8} className="text-gray-500" /> },
+          { label: 'Released', value: released.length, icon: <CheckCircle size={8} className="text-emerald-500" /> },
+          { label: 'Rejected', value: rejected.length, icon: <XCircle size={8} className="text-red-500" /> },
+          { label: 'Disputes', value: disputes.length, icon: <Shield size={8} className="text-amber-500" /> },
+        ].map(s => (
+          <div key={s.label} className="bg-gray-950/40 rounded-lg p-2 flex items-center gap-1.5">
+            {s.icon}
+            <div>
+              <p className="text-xs font-semibold text-gray-200">{s.value}</p>
+              <p className="text-xs text-gray-700">{s.label}</p>
+            </div>
           </div>
-          {r.address && (
-            <a
-              href={`https://stellar.expert/explorer/testnet/account/${r.address}`}
-              target="_blank" rel="noreferrer"
-              className="text-xs text-gray-500 hover:text-violet-400 font-mono flex items-center gap-0.5"
-            >
-              {r.address.slice(0, 4)}…{r.address.slice(-4)}
-              <ExternalLink size={8} />
-            </a>
-          )}
+        ))}
+      </div>
+      {result && (
+        <div className={`rounded-lg px-2 py-1.5 text-xs font-medium ${
+          result.status === 'complete' ? 'bg-emerald-950/40 text-emerald-400' :
+          result.status === 'partial' ? 'bg-amber-950/40 text-amber-400' :
+          'bg-red-950/40 text-red-400'
+        }`}>
+          {result.status} · ${result.total_cost?.toFixed(4)} USDC · {((result.total_time_ms ?? 0) / 1000).toFixed(0)}s
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
 function AppInner() {
   const { isConnected, isLoading } = useWallet();
-
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-[#080c10] flex items-center justify-center">
+        <div className="w-7 h-7 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
-
   if (!isConnected) return <ConnectWallet />;
   return <Dashboard />;
 }

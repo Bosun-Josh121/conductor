@@ -38,12 +38,14 @@ TASK: "${task}"
 BUDGET: $${budget} USDC total
 
 RULES:
-1. Only use agent_ids from the list above — NEVER invent agent_ids.
-2. Use the FEWEST milestones necessary (2-4 for most tasks).
-3. Each milestone must be assigned to ONE agent (the same agent handles all milestones in the demo path — pick the best overall agent).
-4. The sum of all milestone amounts must not exceed the budget.
-5. Every milestone MUST have explicit, checkable acceptance criteria in the "description" field. The Verifier AI will check these — vague criteria cause failures.
-6. Return ONLY valid JSON — no markdown fences, no explanation.
+1. Use the FEWEST milestones necessary (2-4 for most tasks).
+2. The sum of all milestone amounts must NOT exceed the budget.
+3. Every milestone MUST have explicit, checkable acceptance criteria in the "description" field. The AI Verifier checks these — be specific.
+4. For "capabilityTags": list the capabilities the ideal agent for THAT MILESTONE should have. Use tags from the agents' capability lists. This is how agents are matched per milestone — get it right.
+5. Return ONLY valid JSON — no markdown, no explanation.
+
+AGENT CAPABILITY QUICK-REFERENCE (use these exact tags in capabilityTags):
+${agentList.map(a => `  ${a.agent_id}: [${(a.capabilities as string[]).join(', ')}]`).join('\n')}
 
 Return a JSON object with this exact shape:
 {
@@ -52,12 +54,11 @@ Return a JSON object with this exact shape:
       "title": "Short milestone name",
       "description": "Acceptance criteria: 1) ... 2) ... 3) ... (be specific and checkable)",
       "amount": 0.10,
-      "capabilityTags": ["tag1", "tag2"]
+      "capabilityTags": ["exact-capability-tag-from-list"]
     }
   ],
   "total_estimated_cost": 0.20,
-  "reasoning": "One sentence explaining the plan",
-  "selected_agent_id": "<best agent_id for this task>"
+  "reasoning": "One sentence explaining the plan"
 }`;
 
   const response = await anthropic.messages.create({
@@ -116,7 +117,7 @@ function parsePlan(text: string, agents: AgentRecord[], budget: number): Executi
     milestones,
     total_estimated_cost: raw.total_estimated_cost ?? total,
     reasoning: raw.reasoning ?? '',
-    selected_agent_id: raw.selected_agent_id ?? null,
+    selected_agent_id: null,  // per-milestone selection handled in executor
   };
 }
 
