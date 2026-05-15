@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+wallets.json
+data/
+*.log
+.DS_Store
+packages/dashboard/dist/
+packages/orchestrator/public/
