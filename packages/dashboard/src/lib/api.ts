@@ -18,11 +18,11 @@ export async function submitTask(task: string, budget: number, userAddress?: str
   return res.json();
 }
 
-export async function confirmFunding(taskId: string, signedXdr?: string) {
+export async function confirmFunding(taskId: string, payload: { signedXdr?: string; usePlatformFunds?: boolean } = {}) {
   const res = await fetch(`${BASE}/api/tasks/${taskId}/fund-confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ signedXdr }),
+    body: JSON.stringify(payload),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? 'Funding failed');

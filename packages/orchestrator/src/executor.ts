@@ -231,25 +231,33 @@ export class PlanExecutor extends EventEmitter {
     const totalUsdc = plan.milestones.reduce((s, m) => s + m.amount, 0);
 
     if (userAddress) {
-      // Build unsigned fundEscrow XDR — user signs with Freighter
+      // Build unsigned fundEscrow XDR so user can sign with Freighter.
+      // If the XDR fetch fails, emit with fund_xdr empty — the dashboard
+      // will offer the "Use Platform Funds" fallback button instead.
       let fundXdr = '';
       try {
         fundXdr = await getFundEscrowXdr(contractId, userAddress, totalUsdc.toFixed(7));
       } catch (err: any) {
-        console.warn(`[Executor] getFundEscrowXdr failed: ${err.message}`);
+        console.warn(`[Executor] getFundEscrowXdr failed (${err.message}) — user can still choose platform funds`);
       }
+
+      console.log(`[Executor] Waiting for user to fund escrow ${contractId.slice(0, 8)}… (${totalUsdc.toFixed(4)} USDC)`);
       this.emit('funding_required', {
         task_id,
         contract_id: contractId,
         viewer_url: escrowViewerUrl(contractId),
         total_usdc: totalUsdc,
-        fund_xdr: fundXdr,          // unsigned XDR for Freighter to sign
+        fund_xdr: fundXdr,
         funder_address: userAddress,
       });
-      // Pause until user signs and submits the fund transaction
+
+      // Block here — execution resumes only when fund-confirm is called
       await this.waitForFunding(task_id);
+      console.log(`[Executor] Funding confirmed — resuming execution`);
+
     } else {
-      // Headless / test mode — platform wallet funds automatically
+      // Headless / API mode — no connected wallet, platform funds automatically
+      console.log(`[Executor] No user wallet — platform auto-funding ${totalUsdc.toFixed(4)} USDC`);
       try {
         const fundTx = await fundEscrow(contractId, this.platformKeypair, totalUsdc.toFixed(7));
         this.emit('escrow_funded', { task_id, contract_id: contractId, tx_hash: fundTx, amount_usdc: totalUsdc });

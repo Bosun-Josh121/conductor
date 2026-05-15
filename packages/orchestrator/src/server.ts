@@ -114,29 +114,13 @@ function waitForApproval(task_id: string, planPayload: unknown): Promise<void> {
   });
 }
 
-// ── Funding gate — waits for human to fund escrow ─────────────────────────────
-
-interface PendingFunding {
-  resolve: () => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+// ── Escrow funding details — stored when executor emits funding_required ───────
+// Needed so the demo-mode platform-fund path has contractId + amount available.
+interface EscrowFundingDetails {
+  contractId: string;
+  totalUsdc: number;
 }
-
-const pendingFunding = new Map<string, PendingFunding>();
-
-function waitForFunding(task_id: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    // Auto-timeout after 10 minutes
-    const timer = setTimeout(() => {
-      if (pendingFunding.has(task_id)) {
-        pendingFunding.delete(task_id);
-        reject(new Error('Funding timeout — no funding confirmation received within 10 minutes'));
-      }
-    }, 10 * 60 * 1000);
-
-    pendingFunding.set(task_id, { resolve, reject, timer });
-  });
-}
+const escrowFundingDetails = new Map<string, EscrowFundingDetails>();
 
 // ── Express app ────────────────────────────────────────────────────────────────
 
@@ -414,19 +398,35 @@ app.post('/api/tasks/:id/reject', (req, res) => {
 // Confirm escrow funded (human confirms Freighter signing)
 app.post('/api/tasks/:id/fund-confirm', async (req, res) => {
   const { id } = req.params;
-  const { signedXdr } = req.body as { signedXdr?: string };
+  const { signedXdr, usePlatformFunds } = req.body as { signedXdr?: string; usePlatformFunds?: boolean };
   const executor = activeExecutors.get(id);
   if (!executor) return res.status(404).json({ error: 'No active task' });
+
   try {
     if (signedXdr) {
+      // Path A: user signed the fundEscrow XDR with Freighter
       const { submitSignedTransaction } = await import('./trustless-work-client.js');
       const txHash = await submitSignedTransaction(signedXdr);
-      broadcast('escrow_funded', { task_id: id, tx_hash: txHash });
+      broadcast('escrow_funded', { task_id: id, tx_hash: txHash, funded_by: 'user' });
+
+    } else if (usePlatformFunds) {
+      // Path B: demo mode — platform wallet funds on behalf of the user
+      const details = escrowFundingDetails.get(id);
+      if (!details?.contractId) {
+        return res.status(400).json({ error: 'No escrow details on record for this task' });
+      }
+      const { fundEscrow } = await import('./trustless-work-client.js');
+      const txHash = await fundEscrow(details.contractId, platformKeypair, details.totalUsdc.toFixed(7));
+      broadcast('escrow_funded', { task_id: id, tx_hash: txHash, funded_by: 'platform' });
+
     } else {
-      broadcast('escrow_funded', { task_id: id });
+      return res.status(400).json({ error: 'Provide either signedXdr or usePlatformFunds: true' });
     }
+
+    escrowFundingDetails.delete(id);
     executor.resolveFunding(id);
     res.json({ status: 'funded', task_id: id });
+
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -598,15 +598,12 @@ async function runTask(
   executor.on('dispute_resolved', data => broadcast('dispute_resolved', data));
   executor.on('task_complete', data => broadcast('task_complete', data));
 
-  // Wire executor's funding_required to the funding gate
-  executor.on('funding_required', () => {
-    // Don't block — just broadcast. In auto-demo mode, resolve immediately.
-    // In real usage, /api/tasks/:id/fund-confirm resolves the gate.
-    const pending = pendingFunding.get(task_id);
-    if (!pending) {
-      // Create a self-resolving gate for this task
-      // The funding gate was already established above; we need to hook it up
-    }
+  // Store escrow details so the demo-mode platform-fund path can use them
+  executor.on('funding_required', data => {
+    escrowFundingDetails.set(task_id, {
+      contractId: data.contract_id ?? '',
+      totalUsdc: data.total_usdc ?? 0,
+    });
   });
 
   try {
