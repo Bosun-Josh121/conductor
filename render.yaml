@@ -1,19 +1,13 @@
 # Conductor — Render deployment blueprint
 # https://render.com/docs/blueprint-spec
 #
-# Deploy all 7 services from one GitHub repo.
-# After first deploy, update REGISTRY_URL and *_SELF_URL values
-# with the actual .onrender.com URLs assigned to each service.
-#
-# Set secret env vars in the Render dashboard (marked sync: false):
-#   TRUSTLESS_WORK_API_KEY, ANTHROPIC_API_KEY, PLATFORM_SECRET_KEY,
-#   VERIFIER_SECRET_KEY, ARBITER_SECRET_KEY, STELLAR_ORACLE_SECRET_KEY,
-#   WEB_INTEL_SECRET_KEY, WEB_INTEL_V2_SECRET_KEY,
-#   ANALYSIS_AGENT_SECRET_KEY, REPORT_AGENT_SECRET_KEY
+# Deploy order: registry first, then agents, then orchestrator.
+# After first deploy, fill in all URLs marked "← UPDATE" with the real
+# .onrender.com addresses, then redeploy.
 
 services:
 
-  # ── Registry ──────────────────────────────────────────────────────────────────
+  # ── 1. Agent Registry ───────────────────────────────────────────────────────
   - type: web
     name: conductor-registry
     runtime: node
@@ -24,7 +18,7 @@ services:
       - key: NODE_ENV
         value: production
 
-  # ── Orchestrator (also serves the dashboard SPA) ──────────────────────────────
+  # ── 2. Orchestrator (serves the React dashboard SPA) ────────────────────────
   - type: web
     name: conductor-orchestrator
     runtime: node
@@ -35,20 +29,14 @@ services:
       - key: NODE_ENV
         value: production
       - key: REGISTRY_URL
-        value: https://conductor-registry.onrender.com   # update after registry is live
-      - key: TRUSTLESS_WORK_API_URL
-        value: https://dev.api.trustlesswork.com
-      - key: USDC_ASSET_ISSUER
-        value: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
-      - key: USDC_ASSET_CODE
-        value: USDC
-      - key: USDC_DECIMALS
-        value: "7"
-      - key: STELLAR_NETWORK
-        value: stellar:testnet
+        value: https://conductor-registry.onrender.com
       - key: HORIZON_URL
         value: https://horizon-testnet.stellar.org
+      - key: TRUSTLESS_WORK_API_URL
+        value: https://dev.api.trustlesswork.com
       - key: TRUSTLESS_WORK_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
         sync: false
       - key: PLATFORM_SECRET_KEY
         sync: false
@@ -56,10 +44,8 @@ services:
         sync: false
       - key: ARBITER_SECRET_KEY
         sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
 
-  # ── Stellar Oracle ────────────────────────────────────────────────────────────
+  # ── 3. StellarOracle ────────────────────────────────────────────────────────
   - type: web
     name: conductor-stellar-oracle
     runtime: node
@@ -73,12 +59,12 @@ services:
         value: https://conductor-registry.onrender.com
       - key: STELLAR_ORACLE_SELF_URL
         value: https://conductor-stellar-oracle.onrender.com
-      - key: HORIZON_URL
-        value: https://horizon-testnet.stellar.org
       - key: STELLAR_ORACLE_SECRET_KEY
         sync: false
+      - key: HORIZON_URL
+        value: https://horizon-testnet.stellar.org
 
-  # ── Web Intelligence v1 ───────────────────────────────────────────────────────
+  # ── 4. WebIntel ─────────────────────────────────────────────────────────────
   - type: web
     name: conductor-web-intel
     runtime: node
@@ -97,7 +83,7 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
 
-  # ── Web Intelligence v2 ───────────────────────────────────────────────────────
+  # ── 5. WebIntel v2 ──────────────────────────────────────────────────────────
   - type: web
     name: conductor-web-intel-v2
     runtime: node
@@ -113,8 +99,10 @@ services:
         value: https://conductor-web-intel-v2.onrender.com
       - key: WEB_INTEL_V2_SECRET_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
 
-  # ── Analysis Agent ────────────────────────────────────────────────────────────
+  # ── 6. Analysis agent ───────────────────────────────────────────────────────
   - type: web
     name: conductor-analysis
     runtime: node
@@ -133,7 +121,7 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
 
-  # ── Reporter Agent ────────────────────────────────────────────────────────────
+  # ── 7. Reporter agent ───────────────────────────────────────────────────────
   - type: web
     name: conductor-reporter
     runtime: node
