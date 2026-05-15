@@ -40,7 +40,8 @@
     "vite": "^5.4.0"
   },
   "dependencies": {
-    "@creit.tech/stellar-wallets-kit": "^1.4.1",
+    "@creit.tech/stellar-wallets-kit": "^1.9.5",
+    "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.6.1",
     "lit": "^3.3.3",
     "lit-html": "^2.8.0",

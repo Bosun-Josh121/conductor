@@ -1,137 +1,96 @@
 /**
- * WalletProvider — multi-wallet context via @creit.tech/stellar-wallets-kit.
- *
- * Supports: Freighter, xBull, Albedo, LOBSTR, Rabet.
- * WalletConnect is intentionally excluded to avoid MetaMask/WC noise.
- * The kit's built-in modal is NOT used — ConnectWallet renders its own UI
- * so we can avoid the kit's platform-detection quirks.
+ * WalletProvider — direct Freighter integration via @stellar/freighter-api.
+ * Replaces @creit.tech/stellar-wallets-kit to avoid its complex lit/ESM
+ * dependency chain that prevents the vite build from completing.
  */
 import {
   createContext,
   useContext,
   useState,
   useEffect,
-  useRef,
   type ReactNode,
 } from 'react';
 import {
-  StellarWalletsKit,
-  WalletNetwork,
-  FreighterModule,
-  xBullModule,
-  AlbedoModule,
-  LobstrModule,
-  RabetModule,
-  type ISupportedWallet,
-} from '@creit.tech/stellar-wallets-kit';
-
-export type { ISupportedWallet };
+  isConnected as freighterIsConnected,
+  getPublicKey,
+  signTransaction,
+  isAllowed,
+  setAllowed,
+} from '@stellar/freighter-api';
 
 interface WalletContextValue {
   publicKey: string | null;
   isConnected: boolean;
   isLoading: boolean;
-  walletId: string | null;
-  connect: (walletId: string) => Promise<void>;
+  connect: () => Promise<void>;
   disconnect: () => void;
   signTransaction: (xdr: string, networkPassphrase: string) => Promise<string>;
-  getSupportedWallets: () => Promise<ISupportedWallet[]>;
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
-const LS_PUBKEY    = 'conductor_pubkey';
-const LS_WALLET_ID = 'conductor_wallet_id';
-
-const NETWORK = WalletNetwork.TESTNET;
-
-function buildKit(selectedWalletId?: string): StellarWalletsKit {
-  return new StellarWalletsKit({
-    network: NETWORK,
-    selectedWalletId,
-    modules: [
-      new FreighterModule(),
-      new xBullModule(),
-      new AlbedoModule(),
-      new LobstrModule(),
-      new RabetModule(),
-    ],
-  });
-}
+const LS_PUBKEY = 'conductor_pubkey';
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [walletId,  setWalletId]  = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Keep a stable kit ref; recreated when walletId changes.
-  const kitRef = useRef<StellarWalletsKit>(buildKit());
-
   useEffect(() => {
-    // Restore session from localStorage
-    const storedKey      = localStorage.getItem(LS_PUBKEY);
-    const storedWalletId = localStorage.getItem(LS_WALLET_ID);
-    if (storedKey && storedWalletId) {
-      kitRef.current = buildKit(storedWalletId);
-      setPublicKey(storedKey);
-      setWalletId(storedWalletId);
-    }
-    setIsLoading(false);
-  }, []);
-
-  const connect = async (id: string) => {
-    setIsLoading(true);
-    try {
-      kitRef.current = buildKit(id);
-      kitRef.current.setWallet(id);
-      const { address } = await kitRef.current.getAddress();
-      if (!address) throw new Error('Could not retrieve public key from wallet.');
-      setPublicKey(address);
-      setWalletId(id);
-      localStorage.setItem(LS_PUBKEY,    address);
-      localStorage.setItem(LS_WALLET_ID, id);
-    } finally {
+    const saved = localStorage.getItem(LS_PUBKEY);
+    if (saved) {
+      freighterIsConnected().then(connected => {
+        if (connected.isConnected) {
+          setPublicKey(saved);
+        } else {
+          localStorage.removeItem(LS_PUBKEY);
+        }
+      }).catch(() => {
+        localStorage.removeItem(LS_PUBKEY);
+      }).finally(() => setIsLoading(false));
+    } else {
       setIsLoading(false);
     }
+  }, []);
+
+  const connect = async () => {
+    const allowed = await isAllowed();
+    if (!allowed.isAllowed) {
+      await setAllowed();
+    }
+    const result = await getPublicKey();
+    if (result.error) throw new Error(result.error);
+    setPublicKey(result.publicKey);
+    localStorage.setItem(LS_PUBKEY, result.publicKey);
   };
 
   const disconnect = () => {
-    kitRef.current.disconnect?.().catch(() => {});
     setPublicKey(null);
-    setWalletId(null);
     localStorage.removeItem(LS_PUBKEY);
-    localStorage.removeItem(LS_WALLET_ID);
   };
 
-  const signTransaction = async (xdr: string, networkPassphrase: string): Promise<string> => {
-    const { signedTxXdr } = await kitRef.current.signTransaction(xdr, { networkPassphrase });
-    if (!signedTxXdr) throw new Error('Wallet returned no signed XDR.');
-    return signedTxXdr;
+  const signTx = async (xdr: string, networkPassphrase: string): Promise<string> => {
+    if (!publicKey) throw new Error('Wallet not connected');
+    const result = await signTransaction(xdr, { networkPassphrase, accountToSign: publicKey });
+    if (result.error) throw new Error(result.error);
+    return result.signedTransaction;
   };
-
-  const getSupportedWallets = (): Promise<ISupportedWallet[]> =>
-    kitRef.current.getSupportedWallets();
 
   return (
-    <WalletContext.Provider
-      value={{
-        publicKey,
-        isConnected: !!publicKey,
-        isLoading,
-        walletId,
-        connect,
-        disconnect,
-        signTransaction,
-        getSupportedWallets,
-      }}
-    >
+    <WalletContext.Provider value={{
+      publicKey,
+      isConnected: !!publicKey,
+      isLoading,
+      connect,
+      disconnect,
+      signTransaction: signTx,
+    }}>
       {children}
     </WalletContext.Provider>
   );
 }
 
-export function useWallet() {
+export function useWallet(): WalletContextValue {
   const ctx = useContext(WalletContext);
-  if (!ctx) throw new Error('useWallet must be used within WalletProvider');
+  if (!ctx) throw new Error('useWallet must be used inside WalletProvider');
   return ctx;
 }
