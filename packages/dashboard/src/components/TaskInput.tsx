@@ -68,9 +68,13 @@ export function TaskInput({ onSubmit, isRunning, humanOverride, onHumanOverrideC
           <button
             type="button"
             onClick={() => onHumanOverrideChange(!humanOverride)}
-            className={`w-8 h-4 rounded-full transition-colors relative shrink-0 ${humanOverride ? 'bg-amber-600' : 'bg-gray-700'}`}
+            className="relative shrink-0 w-10 h-5 rounded-full"
+            style={{ backgroundColor: humanOverride ? '#d97706' : '#374151', transition: 'background-color 0.2s' }}
           >
-            <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${humanOverride ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            <span
+              className="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow"
+              style={{ left: humanOverride ? '22px' : '2px', transition: 'left 0.2s ease' }}
+            />
           </button>
         </div>
 

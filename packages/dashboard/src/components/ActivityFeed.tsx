@@ -37,11 +37,11 @@ function eventLabel(event: string, data: any): string {
     case 'agent_output':     return `[M${data?.milestone_index ?? '?'}] Agent output received`;
     case 'milestone_marked': return `[M${data?.milestone_index ?? '?'}] Marked done on-chain`;
     case 'verifying':        return `[M${data?.milestone_index ?? '?'}] AI Verifier evaluating…`;
-    case 'verified':         return `[M${data?.milestone_index ?? '?'}] Verifier: ${data?.passed ? '✓ PASSED' : '✗ REJECTED'} — ${(data?.reasoning ?? '').slice(0, 80)}`;
+    case 'verified':         return `[M${data?.milestone_index ?? '?'}] Verifier: ${data?.passed ? '✓ PASSED' : '✗ REJECTED'} — see Milestones panel for details`;
     case 'milestone_released': return `[M${data?.milestone_index ?? '?'}] Released $${data?.amount?.toFixed(4) ?? '?'} USDC to agent`;
-    case 'milestone_rejected': return `[M${data?.milestone_index ?? '?'}] Rejected — contesting…`;
-    case 'dispute_started':  return `[M${data?.milestone_index ?? '?'}] Dispute started`;
-    case 'dispute_resolved': return `[M${data?.milestone_index ?? '?'}] Dispute resolved: agent ${data?.resolution?.agent_pct ?? '?'}%`;
+    case 'milestone_rejected': return `[M${data?.milestone_index ?? '?'}] Rejected — disputing…`;
+    case 'dispute_started':  return `[M${data?.milestone_index ?? '?'}] Dispute opened`;
+    case 'dispute_resolved': return `[M${data?.milestone_index ?? '?'}] Arbiter: Agent ${data?.resolution?.agent_pct ?? '?'}% · Funder ${data?.resolution?.funder_pct ?? '?'}% — see Milestones panel`;
     case 'task_complete':    return `Task ${data?.status ?? 'done'} — $${data?.total_cost?.toFixed(4) ?? '?'} spent`;
     case 'task_result':      return `Result: ${data?.status ?? '?'} — $${data?.total_cost?.toFixed(4) ?? '?'} | ${data?.escrow_viewer_url ? 'View escrow ↗' : ''}`;
     case 'task_error':       return `Error: ${data?.error ?? 'unknown'}`;

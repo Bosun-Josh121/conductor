@@ -98,11 +98,15 @@ app.post('/query', async (req, res) => {
 
     if (trades && trades.length > 0) {
       const latestPrice = parseFloat(trades[0].price);
-      lines.push('## Recent Trade History (last 10 trades)');
+      lines.push('## Recent Trade History (5 most recent trades)');
       lines.push(`- **Most recent trade price**: ${latestPrice.toFixed(6)} USDC per XLM`);
       lines.push(`- **Note**: Testnet trade history may differ from orderbook due to infrequent activity`);
+      lines.push('');
+      lines.push('| # | Timestamp (ISO 8601) | Price (USDC/XLM) | XLM Amount | USDC Amount |');
+      lines.push('|---|---------------------|-----------------|------------|-------------|');
       trades.slice(0, 5).forEach((t: any, i: number) => {
-        lines.push(`  ${i + 1}. Price: ${t.price} | XLM: ${t.base_amount} | USDC: ${t.counter_amount} | ${t.timestamp?.slice(0, 10) ?? ''}`);
+        const ts = t.timestamp ?? '';  // full ISO 8601 e.g. 2026-05-15T18:34:56Z
+        lines.push(`| ${i + 1} | ${ts} | ${t.price} | ${t.base_amount} | ${t.counter_amount} |`);
       });
       lines.push('');
     }

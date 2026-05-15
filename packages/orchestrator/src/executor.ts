@@ -1,11 +1,10 @@
 /**
  * Conductor Execution Engine
  *
- * Key design:
- * - Platform wallet is the escrow ServiceProvider (signs markMilestone calls)
- * - DIFFERENT agent selected per milestone based on capabilityTags
- * - Each milestone's receiver = the selected agent's stellar address
- * - All AI-signed actions use server-side keypairs
+ * Human-override mode: escrow deployed with user wallet as Approver.
+ * Server fetches unsigned approveMilestone XDR, sends to browser via WS event,
+ * Freighter signs it, browser submits signed XDR back, server continues.
+ * Dispute resolver is always the AI Arbiter so dispute path still works.
  */
 
 import { EventEmitter } from 'events';
@@ -24,19 +23,25 @@ import {
   markMilestone,
   releaseMilestone,
   startDispute,
+  getApproveMilestoneXdr,
+  submitSignedTransaction,
   type DeployEscrowSpec,
 } from './trustless-work-client.js';
-import { verifyMilestone, loadVerifierKeypair } from './verifier.js';
+import { verifyMilestone, getVerifierVerdict, loadVerifierKeypair } from './verifier.js';
 import { arbitrateDispute, loadArbiterKeypair } from './arbiter.js';
-import { planToEscrowSpec } from './planner.js';
-import { selectBestAgent, scoreAgents } from './selector.js';
+import { selectBestAgent } from './selector.js';
 
 export interface ExecutorOptions {
   contractId?: string;
   humanOverride?: {
-    approver?: string;
-    disputeResolver?: string;
+    approver?: string;        // human wallet — escrow approver role
+    disputeResolver?: string; // ignored; AI Arbiter always handles disputes
   };
+}
+
+interface HumanDecision {
+  approved: boolean;
+  signedXdr?: string; // Freighter-signed approveMilestone XDR (present when approved)
 }
 
 // ── Health check ──────────────────────────────────────────────────────────────
@@ -84,6 +89,9 @@ export class PlanExecutor extends EventEmitter {
   private verifierKeypair: Keypair;
   private arbiterKeypair: Keypair;
 
+  // Human-review gates: keyed by "taskId:milestoneIndex"
+  private humanDecisionMap = new Map<string, (d: HumanDecision) => void>();
+
   constructor(availableAgents: AgentRecord[]) {
     super();
     this.agentMap = new Map(availableAgents.map(a => [a.agent_id, a]));
@@ -92,39 +100,70 @@ export class PlanExecutor extends EventEmitter {
     this.arbiterKeypair = loadArbiterKeypair();
   }
 
+  // Called by server.ts when the human clicks Approve or Reject in the dashboard
+  resolveHumanDecision(taskId: string, milestoneIndex: number, decision: HumanDecision) {
+    const key = `${taskId}:${milestoneIndex}`;
+    const cb = this.humanDecisionMap.get(key);
+    if (cb) {
+      this.humanDecisionMap.delete(key);
+      cb(decision);
+    }
+  }
+
+  private waitForHumanDecision(
+    taskId: string,
+    milestoneIndex: number,
+    timeoutMs = 10 * 60 * 1000,
+  ): Promise<HumanDecision> {
+    const key = `${taskId}:${milestoneIndex}`;
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        if (this.humanDecisionMap.has(key)) {
+          this.humanDecisionMap.delete(key);
+          console.log(`[Executor] Human review timed out for M${milestoneIndex} — auto-rejecting`);
+          resolve({ approved: false });
+        }
+      }, timeoutMs);
+
+      this.humanDecisionMap.set(key, decision => {
+        clearTimeout(timer);
+        resolve(decision);
+      });
+    });
+  }
+
   async execute(
     plan: ExecutionPlan,
     task: string,
     registryUrl: string,
     userAddress: string | null,
     options: ExecutorOptions = {},
+    taskId?: string,  // use the server's task_id so activeExecutors lookups match
   ): Promise<TaskResult> {
-    const task_id = uuidv4();
+    const task_id = taskId ?? uuidv4();
     const startTime = Date.now();
     const agents = [...this.agentMap.values()];
+    const isHumanMode = !!options.humanOverride?.approver;
+    const humanApproverAddress = options.humanOverride?.approver ?? '';
 
     this.emit('task_started', { task_id, task, milestone_count: plan.milestones.length });
 
-    // ── Select best agent PER MILESTONE based on capabilityTags ──────────────
-    // Platform wallet is the escrow serviceProvider (signs mark transactions).
-    // Each milestone routes to the most capable registered agent.
+    // ── Per-milestone agent selection ─────────────────────────────────────────
     const milestoneAgents: AgentRecord[] = plan.milestones.map(m => {
       if (m.capabilityTags.length > 0) {
         const best = selectBestAgent(agents, m.capabilityTags);
         if (best) return best.agent;
       }
-      // Fallback: pick highest-reputation agent
       return agents.sort((a, b) => b.reputation.score - a.reputation.score)[0];
     });
 
-    // Log the routing decision
     for (let i = 0; i < plan.milestones.length; i++) {
       const a = milestoneAgents[i];
-      console.log(`[Executor] M${i} "${plan.milestones[i].title}" → ${a?.name ?? '?'} (caps: ${plan.milestones[i].capabilityTags.join(',')})`);
+      console.log(`[Executor] M${i} "${plan.milestones[i].title}" → ${a?.name ?? '?'}`);
     }
 
     // ── Deploy escrow ─────────────────────────────────────────────────────────
-    // Platform is the serviceProvider (signs marks); per-milestone receiver = agent address
+    // In human mode: escrow Approver = human wallet; Dispute Resolver = AI Arbiter always.
     let contractId = options.contractId ?? '';
     let deployTxHash = '';
 
@@ -135,11 +174,10 @@ export class PlanExecutor extends EventEmitter {
         title: task.slice(0, 100),
         description: task,
         platformAddress: this.platformKeypair.publicKey(),
-        serviceProvider: this.platformKeypair.publicKey(),  // platform signs all marks
-        approver: options.humanOverride?.approver ?? this.verifierKeypair.publicKey(),
-        disputeResolver: options.humanOverride?.disputeResolver ?? this.arbiterKeypair.publicKey(),
+        serviceProvider: this.platformKeypair.publicKey(),
+        approver: isHumanMode ? humanApproverAddress : this.verifierKeypair.publicKey(),
+        disputeResolver: this.arbiterKeypair.publicKey(), // always AI Arbiter
         releaseSigner: this.platformKeypair.publicKey(),
-        humanOverride: options.humanOverride,
         milestones: plan.milestones.map((m, i) => ({
           description: `${m.title}: ${m.description}`,
           amount: m.amount.toFixed(7),
@@ -156,6 +194,8 @@ export class PlanExecutor extends EventEmitter {
         contract_id: contractId,
         tx_hash: deployTxHash,
         viewer_url: escrowViewerUrl(contractId),
+        human_mode: isHumanMode,
+        approver: isHumanMode ? humanApproverAddress : this.verifierKeypair.publicKey(),
       });
     }
 
@@ -164,7 +204,6 @@ export class PlanExecutor extends EventEmitter {
     try {
       const fundTx = await fundEscrow(contractId, this.platformKeypair, totalUsdc.toFixed(7));
       this.emit('escrow_funded', { task_id, contract_id: contractId, tx_hash: fundTx, amount_usdc: totalUsdc });
-      console.log(`[Executor] Escrow ${contractId.slice(0, 8)} funded: ${totalUsdc.toFixed(4)} USDC`);
     } catch (err: any) {
       console.warn(`[Executor] Auto-fund failed: ${err.message}`);
       this.emit('funding_required', { task_id, contract_id: contractId, viewer_url: escrowViewerUrl(contractId), total_usdc: totalUsdc });
@@ -187,7 +226,6 @@ export class PlanExecutor extends EventEmitter {
 
       this.emit('milestone_started', { task_id, milestone_index: i, title: milestone.title, agent: agent.name });
 
-      // Health check
       const healthy = await checkHealth(agent);
       if (!healthy) {
         milestoneResults.push(this.failedMilestone(i, milestone.title, agent, 'Agent health check failed', msStart));
@@ -195,7 +233,6 @@ export class PlanExecutor extends EventEmitter {
         continue;
       }
 
-      // Agent does the work
       let output: string | null = null;
       try {
         output = await callAgent(agent, `${milestone.title}: ${milestone.description}`, previousOutput ?? undefined);
@@ -206,7 +243,6 @@ export class PlanExecutor extends EventEmitter {
         continue;
       }
 
-      // Platform signs the markMilestone (serviceProvider = platform in escrow)
       let markTxHash: string | null = null;
       try {
         markTxHash = await markMilestone(contractId, i, output.slice(0, 500), this.platformKeypair);
@@ -215,69 +251,184 @@ export class PlanExecutor extends EventEmitter {
         console.warn(`[Executor] markMilestone failed M${i}: ${err.message}`);
       }
 
-      // AI Verifier evaluates
-      this.emit('verifying', { task_id, milestone_index: i });
-      const verifierResult = await verifyMilestone(
-        { acceptanceCriteria: milestone.description, deliverable: output, milestoneTitle: milestone.title },
-        contractId, i, this.verifierKeypair,
-      );
-
-      this.emit('verified', {
-        task_id, milestone_index: i,
-        passed: verifierResult.verdict.passed,
-        reasoning: verifierResult.verdict.reasoning,
-        approval_tx: verifierResult.approvalTxHash,
-      });
-
+      // ── Verify & release: human mode vs AI mode ───────────────────────────
       let releaseTxHash: string | null = null;
       let disputeStartTxHash: string | null = null;
       let disputeResolveTxHash: string | null = null;
       let disputeResolution = null;
+      let verifierVerdict: any = null;
 
-      if (verifierResult.verdict.passed && verifierResult.approvalTxHash) {
-        // Release funds
+      this.emit('verifying', { task_id, milestone_index: i });
+
+      if (isHumanMode) {
+        // ── HUMAN MODE ───────────────────────────────────────────────────────
+        // Get AI recommendation (Claude verdict only, no on-chain action)
+        let aiVerdict;
         try {
-          releaseTxHash = await releaseMilestone(contractId, i, this.platformKeypair);
-          totalCost += milestone.amount;
-          this.emit('milestone_released', {
-            task_id, milestone_index: i, amount: milestone.amount,
-            tx_hash: releaseTxHash, explorer_url: releaseTxHash ? txExplorerUrl(releaseTxHash) : null,
-          });
-        } catch (err: any) {
-          console.warn(`[Executor] releaseMilestone failed: ${err.message}`);
-        }
-      } else {
-        // Rejected → contest → Arbiter
-        this.emit('milestone_rejected', { task_id, milestone_index: i, reasoning: verifierResult.verdict.reasoning });
-
-        try {
-          disputeStartTxHash = await startDispute(contractId, i, this.platformKeypair);
-          this.emit('dispute_started', { task_id, milestone_index: i, tx_hash: disputeStartTxHash });
-        } catch (err: any) {
-          console.warn(`[Executor] startDispute failed: ${err.message}`);
-        }
-
-        const arbiterResult = await arbitrateDispute(
-          {
-            milestoneTitle: milestone.title,
+          aiVerdict = await getVerifierVerdict({
             acceptanceCriteria: milestone.description,
             deliverable: output,
-            verifierReasoning: verifierResult.verdict.reasoning,
-            agentContestReason: 'Agent contests: the deliverable addresses the core requirements even if not perfectly formatted.',
-            verifierVerdict: verifierResult.verdict,
-          },
-          contractId, i, milestone.amount,
-          agent.stellar_address,
-          this.platformKeypair.publicKey(),
-          this.arbiterKeypair,
-        );
+            milestoneTitle: milestone.title,
+          });
+        } catch (err: any) {
+          console.warn(`[Executor] getVerifierVerdict failed M${i}: ${err.message}`);
+          aiVerdict = { passed: false, reasoning: 'AI evaluation failed — please review manually.', per_criterion: [] };
+        }
+        verifierVerdict = aiVerdict;
 
-        disputeResolveTxHash = arbiterResult.resolveTxHash;
-        disputeResolution = arbiterResult.resolution;
-        this.emit('dispute_resolved', { task_id, milestone_index: i, resolution: arbiterResult.resolution, tx_hash: disputeResolveTxHash });
+        // Fetch unsigned XDR so Freighter can sign it
+        let approveXdr = '';
+        try {
+          approveXdr = await getApproveMilestoneXdr(contractId, i, humanApproverAddress);
+        } catch (err: any) {
+          console.warn(`[Executor] getApproveMilestoneXdr failed M${i}: ${err.message}`);
+        }
 
-        if (arbiterResult.resolution.agent_pct > 0) {
-          totalCost += milestone.amount * arbiterResult.resolution.agent_pct / 100;
+        // Pause — wait for human to approve or reject in the dashboard
+        this.emit('human_review_required', {
+          task_id,
+          milestone_index: i,
+          title: milestone.title,
+          deliverable: output,
+          ai_recommendation: aiVerdict,
+          approve_xdr: approveXdr,
+          contract_id: contractId,
+        });
+
+        const decision = await this.waitForHumanDecision(task_id, i);
+
+        this.emit('verified', {
+          task_id,
+          milestone_index: i,
+          passed: decision.approved,
+          reasoning: decision.approved
+            ? 'Human reviewer approved this milestone.'
+            : 'Human reviewer rejected this milestone.',
+          approval_tx: null,
+        });
+
+        if (decision.approved && decision.signedXdr) {
+          try {
+            // Submit Freighter-signed approveMilestone
+            const approveTxHash = await submitSignedTransaction(decision.signedXdr);
+            console.log(`[Executor] Human approval submitted on-chain: ${approveTxHash}`);
+
+            releaseTxHash = await releaseMilestone(contractId, i, this.platformKeypair);
+            totalCost += milestone.amount;
+            this.emit('milestone_released', {
+              task_id,
+              milestone_index: i,
+              amount: milestone.amount,
+              tx_hash: releaseTxHash,
+              explorer_url: releaseTxHash ? txExplorerUrl(releaseTxHash) : null,
+            });
+          } catch (err: any) {
+            console.warn(`[Executor] Human approval/release failed M${i}: ${err.message}`);
+          }
+        } else {
+          // Human rejected → AI Arbiter dispute
+          this.emit('milestone_rejected', { task_id, milestone_index: i, reasoning: 'Human reviewer rejected' });
+          try {
+            disputeStartTxHash = await startDispute(contractId, i, this.platformKeypair);
+            this.emit('dispute_started', { task_id, milestone_index: i, tx_hash: disputeStartTxHash });
+          } catch (err: any) {
+            console.warn(`[Executor] startDispute failed M${i}: ${err.message}`);
+          }
+
+          const arbiterResult = await arbitrateDispute(
+            {
+              milestoneTitle: milestone.title,
+              acceptanceCriteria: milestone.description,
+              deliverable: output,
+              verifierReasoning: aiVerdict.reasoning,
+              agentContestReason: 'Human reviewer rejected. Agent requests fair arbiter review.',
+              verifierVerdict: aiVerdict,
+            },
+            contractId, i, milestone.amount,
+            agent.stellar_address,
+            this.platformKeypair.publicKey(),
+            this.arbiterKeypair,
+          );
+
+          disputeResolveTxHash = arbiterResult.resolveTxHash;
+          disputeResolution = arbiterResult.resolution;
+          this.emit('dispute_resolved', {
+            task_id, milestone_index: i,
+            resolution: arbiterResult.resolution,
+            tx_hash: disputeResolveTxHash,
+          });
+          if (arbiterResult.resolution.agent_pct > 0) {
+            totalCost += milestone.amount * arbiterResult.resolution.agent_pct / 100;
+          }
+        }
+
+      } else {
+        // ── AI MODE ──────────────────────────────────────────────────────────
+        let verifierResult;
+        try {
+          verifierResult = await verifyMilestone(
+            { acceptanceCriteria: milestone.description, deliverable: output, milestoneTitle: milestone.title },
+            contractId, i, this.verifierKeypair,
+          );
+        } catch (err: any) {
+          console.warn(`[Executor] verifyMilestone failed M${i}: ${err.message}`);
+          verifierResult = { verdict: { passed: false, reasoning: `Verifier error: ${err.message}`, per_criterion: [] }, approvalTxHash: null };
+        }
+        verifierVerdict = verifierResult.verdict;
+
+        this.emit('verified', {
+          task_id, milestone_index: i,
+          passed: verifierResult.verdict.passed,
+          reasoning: verifierResult.verdict.reasoning,
+          approval_tx: verifierResult.approvalTxHash,
+        });
+
+        if (verifierResult.verdict.passed && verifierResult.approvalTxHash) {
+          try {
+            releaseTxHash = await releaseMilestone(contractId, i, this.platformKeypair);
+            totalCost += milestone.amount;
+            this.emit('milestone_released', {
+              task_id, milestone_index: i, amount: milestone.amount,
+              tx_hash: releaseTxHash, explorer_url: releaseTxHash ? txExplorerUrl(releaseTxHash) : null,
+            });
+          } catch (err: any) {
+            console.warn(`[Executor] releaseMilestone failed M${i}: ${err.message}`);
+          }
+        } else {
+          this.emit('milestone_rejected', { task_id, milestone_index: i, reasoning: verifierResult.verdict.reasoning });
+
+          try {
+            disputeStartTxHash = await startDispute(contractId, i, this.platformKeypair);
+            this.emit('dispute_started', { task_id, milestone_index: i, tx_hash: disputeStartTxHash });
+          } catch (err: any) {
+            console.warn(`[Executor] startDispute failed M${i}: ${err.message}`);
+          }
+
+          const arbiterResult = await arbitrateDispute(
+            {
+              milestoneTitle: milestone.title,
+              acceptanceCriteria: milestone.description,
+              deliverable: output,
+              verifierReasoning: verifierResult.verdict.reasoning,
+              agentContestReason: 'Agent contests: the deliverable addresses the core requirements even if not perfectly formatted.',
+              verifierVerdict: verifierResult.verdict,
+            },
+            contractId, i, milestone.amount,
+            agent.stellar_address,
+            this.platformKeypair.publicKey(),
+            this.arbiterKeypair,
+          );
+
+          disputeResolveTxHash = arbiterResult.resolveTxHash;
+          disputeResolution = arbiterResult.resolution;
+          this.emit('dispute_resolved', {
+            task_id, milestone_index: i,
+            resolution: arbiterResult.resolution,
+            tx_hash: disputeResolveTxHash,
+          });
+          if (arbiterResult.resolution.agent_pct > 0) {
+            totalCost += milestone.amount * arbiterResult.resolution.agent_pct / 100;
+          }
         }
       }
 
@@ -286,15 +437,15 @@ export class PlanExecutor extends EventEmitter {
         title: milestone.title,
         agent_id: agent.agent_id,
         agent_name: agent.name,
-        success: verifierResult.verdict.passed || (disputeResolution?.agent_pct ?? 0) > 0,
+        success: !!releaseTxHash || (disputeResolution?.agent_pct ?? 0) > 0,
         output,
         evidence: output.slice(0, 500),
         error: null,
-        verifier_verdict: verifierResult.verdict,
+        verifier_verdict: verifierVerdict,
         dispute_resolution: disputeResolution,
         tx_hashes: {
           mark: markTxHash ?? undefined,
-          approve: verifierResult.approvalTxHash ?? undefined,
+          approve: undefined,
           release: releaseTxHash ?? undefined,
           dispute_start: disputeStartTxHash ?? undefined,
           dispute_resolve: disputeResolveTxHash ?? undefined,

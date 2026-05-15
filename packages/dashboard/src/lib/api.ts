@@ -133,6 +133,27 @@ export async function deleteTaskHistory(taskId: string, userAddress: string): Pr
   return res.ok;
 }
 
+export async function humanApproveMilestone(taskId: string, milestoneIndex: number, signedXdr: string) {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/milestones/${milestoneIndex}/human-approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signedXdr }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? 'Approval failed');
+  return data;
+}
+
+export async function humanRejectMilestone(taskId: string, milestoneIndex: number) {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/milestones/${milestoneIndex}/human-reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? 'Rejection failed');
+  return data;
+}
+
 export async function previewTask(task: string, budget: number) {
   const res = await fetch(`${BASE}/api/tasks/preview`, {
     method: 'POST',

@@ -12,6 +12,7 @@ import { TaskInput } from './components/TaskInput';
 import { MilestonePanel } from './components/MilestonePanel';
 import { EscrowPanel } from './components/EscrowPanel';
 import { PlanApproval, type PendingPlan } from './components/PlanApproval';
+import { HumanMilestoneReview, type HumanReviewData } from './components/HumanMilestoneReview';
 import { AgentsPage } from './components/AgentsPage';
 import { RegisterAgent } from './components/RegisterAgent';
 import { TaskHistory } from './components/TaskHistory';
@@ -76,6 +77,7 @@ function Dashboard() {
   const [hasResult, setHasResult]    = useState(false);
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
   const [fundingInfo, setFundingInfo] = useState<{ task_id: string; contract_id: string; viewer_url: string; total_usdc: number } | null>(null);
+  const [humanReview, setHumanReview] = useState<HumanReviewData | null>(null);
   const [humanOverride, setHumanOverride] = useState(false);
 
   const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
@@ -103,6 +105,8 @@ function Dashboard() {
       setIsRunning(false);
       setFundingInfo(null);
     }
+    if (e.event === 'human_review_required') setHumanReview(e.data as HumanReviewData);
+    if (['human_approved', 'human_rejected', 'milestone_released', 'dispute_resolved'].includes(e.event)) setHumanReview(null);
     if (e.event === 'plan_approval_required') setPendingPlan(e.data as PendingPlan);
     if (['plan_approved', 'plan_rejected', 'plan_auto_approved'].includes(e.event)) setPendingPlan(null);
     if (e.event === 'funding_required') {
@@ -260,6 +264,12 @@ function Dashboard() {
           onApprove={() => approveTask(pendingPlan.task_id).then(() => setPendingPlan(null))}
           onReject={() => rejectTask(pendingPlan.task_id).then(() => setPendingPlan(null))}
           onDismiss={() => setPendingPlan(null)}
+        />
+      )}
+      {humanReview && (
+        <HumanMilestoneReview
+          review={humanReview}
+          onDone={() => setHumanReview(null)}
         />
       )}
       {fundingInfo && (

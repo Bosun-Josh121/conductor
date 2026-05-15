@@ -7,6 +7,10 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const CONTEXT = `
 You are orchestrating AI agents as a task marketplace where each milestone is backed by a Trustless Work escrow.
 Each milestone must have explicit, checkable acceptance criteria — the AI Verifier will evaluate deliverables against these criteria to decide whether to approve on-chain payment.
+
+IMPORTANT: This system runs exclusively on Stellar TESTNET (soroban-testnet.stellar.org). All agents query testnet data only.
+Never write acceptance criteria that require mainnet data, real trading volume, or production blockchain activity.
+Acceptance criteria must be achievable from Stellar testnet DEX data, testnet accounts, and publicly available web content.
 `;
 
 export async function createPlan(

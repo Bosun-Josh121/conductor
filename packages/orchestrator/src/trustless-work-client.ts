@@ -353,6 +353,25 @@ export async function getEscrow(contractId: string): Promise<any> {
   return Array.isArray(results) ? results[0] : results;
 }
 
+// ── Get unsigned approve XDR for external (human/Freighter) signing ───────────
+
+/**
+ * Returns the unsigned approveMilestone XDR so it can be signed externally
+ * (e.g. by a human via Freighter) without needing the approver's private key server-side.
+ */
+export async function getApproveMilestoneXdr(
+  contractId: string,
+  milestoneIndex: number,
+  approverPublicKey: string,
+): Promise<string> {
+  const response = await twPost('/escrow/multi-release/approve-milestone', {
+    contractId,
+    milestoneIndex: String(milestoneIndex),
+    approver: approverPublicKey,
+  });
+  return extractUnsignedXdr(response, 'getApproveMilestoneXdr');
+}
+
 // ── Submit a pre-signed XDR (from Freighter) ──────────────────────────────────
 
 export async function submitSignedTransaction(signedXdr: string): Promise<string> {

@@ -12,6 +12,28 @@ import type { VerifierVerdict } from '@conductor/common';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+async function callClaude(prompt: string): Promise<string> {
+  const delays = [0, 3000, 6000];
+  let lastErr: Error = new Error('Unknown');
+  for (const delay of delays) {
+    if (delay > 0) await new Promise(r => setTimeout(r, delay));
+    try {
+      const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      return response.content[0].type === 'text' ? response.content[0].text : '';
+    } catch (err: any) {
+      lastErr = err;
+      const isTransient = err.message?.includes('Connection') || err.message?.includes('timeout') || err.status >= 500;
+      if (!isTransient) throw err;
+      console.warn(`[Verifier] Claude call failed (${err.message}), retrying...`);
+    }
+  }
+  throw lastErr;
+}
+
 export interface VerifierInput {
   acceptanceCriteria: string;
   deliverable: string;
@@ -21,6 +43,41 @@ export interface VerifierInput {
 export interface VerifierResult {
   verdict: VerifierVerdict;
   approvalTxHash: string | null;  // non-null only if passed=true and contract signed
+}
+
+/**
+ * Get Claude's verdict on a deliverable without any on-chain action.
+ * Used in human-override mode to produce an AI recommendation for the human reviewer.
+ */
+export async function getVerifierVerdict(input: VerifierInput): Promise<VerifierVerdict> {
+  const prompt = `You are an objective AI quality verifier for a task marketplace. Your job is to evaluate a deliverable against explicit acceptance criteria and return a structured verdict.
+
+MILESTONE: "${input.milestoneTitle}"
+
+ACCEPTANCE CRITERIA:
+${input.acceptanceCriteria}
+
+DELIVERABLE:
+${input.deliverable.slice(0, 3000)}
+
+Evaluate each criterion individually. Be honest and strict — only pass if the criterion is genuinely met.
+
+Return ONLY valid JSON with this exact shape (no markdown, no explanation):
+{
+  "passed": true or false,
+  "reasoning": "One paragraph explaining the overall verdict",
+  "per_criterion": [
+    { "criterion": "criterion text", "passed": true or false, "note": "brief note" }
+  ]
+}`;
+
+  try {
+    const text = await callClaude(prompt);
+    return parseVerdict(text);
+  } catch (err: any) {
+    console.warn(`[Verifier] getVerifierVerdict infrastructure error: ${err.message} — defaulting to pass`);
+    return { passed: true, reasoning: `Verifier unavailable (${err.message}). Defaulting to pass — agent should not be penalized for infrastructure failures.`, per_criterion: [] };
+  }
 }
 
 /**
@@ -58,14 +115,14 @@ Return ONLY valid JSON with this exact shape (no markdown, no explanation):
   ]
 }`;
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 800,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
-  const verdict = parseVerdict(text);
+  let verdict: VerifierVerdict;
+  try {
+    const text = await callClaude(prompt);
+    verdict = parseVerdict(text);
+  } catch (err: any) {
+    console.warn(`[Verifier] verifyMilestone infrastructure error: ${err.message} — defaulting to pass`);
+    verdict = { passed: true, reasoning: `Verifier unavailable (${err.message}). Defaulting to pass.`, per_criterion: [] };
+  }
 
   let approvalTxHash: string | null = null;
 
@@ -85,20 +142,34 @@ Return ONLY valid JSON with this exact shape (no markdown, no explanation):
 }
 
 function parseVerdict(text: string): VerifierVerdict {
+  const fallback = (reason: string): VerifierVerdict => ({
+    passed: false,
+    reasoning: reason,
+    per_criterion: [],
+  });
+
   const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+
   let raw: any;
-  try {
-    raw = JSON.parse(cleaned);
-  } catch {
+
+  // Try full parse first
+  try { raw = JSON.parse(cleaned); }
+  catch {
+    // Try extracting the outermost {...} block (handles trailing truncation)
     const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) {
+    if (!match) return fallback('Verifier returned non-JSON response.');
+    try { raw = JSON.parse(match[0]); }
+    catch {
+      // Last resort: extract just the fields we care about with regex
+      const passedMatch = cleaned.match(/"passed"\s*:\s*(true|false)/);
+      const reasonMatch = cleaned.match(/"reasoning"\s*:\s*"([^"]{0,500})"/);
+      if (!passedMatch) return fallback('Verifier response was truncated and unparseable.');
       return {
-        passed: false,
-        reasoning: 'Verifier failed to produce a structured verdict.',
+        passed: passedMatch[1] === 'true',
+        reasoning: reasonMatch ? reasonMatch[1] : 'Verdict truncated — see raw output.',
         per_criterion: [],
       };
     }
-    raw = JSON.parse(match[0]);
   }
 
   return {

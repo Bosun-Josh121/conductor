@@ -59,6 +59,9 @@ if (!process.env.PLATFORM_SECRET_KEY) {
 const platformKeypair = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
 const PLATFORM_ADDRESS = platformKeypair.publicKey();
 
+// ── Live executor map (task_id → PlanExecutor) for human-review gates ─────────
+const activeExecutors = new Map<string, import('./executor.js').PlanExecutor>();
+
 // ── Registry helpers ──────────────────────────────────────────────────────────
 
 async function fetchAgents(): Promise<AgentRecord[]> {
@@ -420,6 +423,28 @@ app.post('/api/tasks/:id/fund-confirm', (req, res) => {
   res.json({ status: 'funded', task_id: id });
 });
 
+// Human approves a milestone (sends Freighter-signed XDR)
+app.post('/api/tasks/:id/milestones/:idx/human-approve', (req, res) => {
+  const { id, idx } = req.params;
+  const { signedXdr } = req.body as { signedXdr?: string };
+  const executor = activeExecutors.get(id);
+  if (!executor) return res.status(404).json({ error: 'No active task' });
+  if (!signedXdr) return res.status(400).json({ error: 'signedXdr required' });
+  executor.resolveHumanDecision(id, parseInt(idx, 10), { approved: true, signedXdr });
+  broadcast('human_approved', { task_id: id, milestone_index: parseInt(idx, 10) });
+  res.json({ status: 'approved' });
+});
+
+// Human rejects a milestone
+app.post('/api/tasks/:id/milestones/:idx/human-reject', (req, res) => {
+  const { id, idx } = req.params;
+  const executor = activeExecutors.get(id);
+  if (!executor) return res.status(404).json({ error: 'No active task' });
+  executor.resolveHumanDecision(id, parseInt(idx, 10), { approved: false });
+  broadcast('human_rejected', { task_id: id, milestone_index: parseInt(idx, 10) });
+  res.json({ status: 'rejected' });
+});
+
 // ── Task pipeline ─────────────────────────────────────────────────────────────
 
 async function runTask(
@@ -511,7 +536,9 @@ async function runTask(
   }
 
   const executor = new PlanExecutor(agents);
+  activeExecutors.set(task_id, executor);
 
+  executor.on('human_review_required', data => broadcast('human_review_required', data));
   executor.on('escrow_deployed', data => {
     broadcast('escrow_deployed', { task_id, ...data });
     if (userAddress && data.contract_id) {
@@ -578,8 +605,9 @@ async function runTask(
       humanOverride: options.humanOverride?.approver || options.humanOverride?.disputeResolver
         ? options.humanOverride
         : undefined,
-    });
+    }, task_id); // pass server task_id so human-review endpoints can look up the executor
 
+    activeExecutors.delete(task_id);
     broadcast('task_result', result);
     console.log(`[Orchestrator] Task ${result.task_id} ${result.status} | cost: $${result.total_cost.toFixed(4)} | ${result.total_time_ms}ms`);
 

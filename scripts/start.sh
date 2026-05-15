@@ -115,12 +115,10 @@ echo "Starting orchestrator..."
 start_svc "orchestrator" "packages/orchestrator/src/server.ts"
 wait_port 3000 "Orchestrator" 40
 
-# Build dashboard if not present
-if [ ! -f "packages/orchestrator/public/index.html" ]; then
-  echo ""
-  echo "Building dashboard (first run - may take 30s)..."
-  npm run build:dashboard 2>&1 | grep -E "built in|error|warn" | head -5
-fi
+# Always rebuild dashboard so source changes are reflected
+echo ""
+echo "Building dashboard..."
+npm run build:dashboard 2>&1 | grep -E "built in|error|warning|Error" | head -10
 
 # Health summary
 echo ""

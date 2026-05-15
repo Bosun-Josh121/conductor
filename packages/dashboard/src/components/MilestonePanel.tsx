@@ -1,4 +1,6 @@
 import { CheckCircle, XCircle, Clock, ExternalLink, Shield } from 'lucide-react';
+import { MarkdownRenderer } from './MarkdownRenderer';
+import { FinancialBreakdown } from './FinancialBreakdown';
 import type { WSEvent } from '../hooks/useWebSocket';
 
 interface MilestoneState {
@@ -131,17 +133,20 @@ export function MilestonePanel({ events }: Props) {
           </div>
 
           {ms.verifierReasoning && (
-            <div className={`text-xs px-2 py-1 rounded ${ms.verifierPassed ? 'text-emerald-400 bg-emerald-950/40' : 'text-red-400 bg-red-950/40'}`}>
-              <span className="font-medium">{ms.verifierPassed ? '✓ Approved' : '✗ Rejected'}: </span>
-              {ms.verifierReasoning.slice(0, 150)}
+            <div className={`text-xs px-2 py-1.5 rounded ${ms.verifierPassed ? 'text-emerald-400 bg-emerald-950/40' : 'text-red-400 bg-red-950/40'}`}>
+              <span className="font-semibold">{ms.verifierPassed ? '✓ Approved' : '✗ Rejected'}: </span>
+              {ms.verifierReasoning}
             </div>
           )}
 
           {ms.disputeResolution && (
-            <div className="text-xs text-violet-400 bg-violet-950/40 px-2 py-1 rounded">
-              <span className="font-medium">Arbiter resolved: </span>
-              Agent {ms.disputeResolution.agent_pct}% · Funder {ms.disputeResolution.funder_pct}%
-              <p className="text-violet-500 mt-0.5">{ms.disputeResolution.reasoning?.slice(0, 100)}</p>
+            <div className="text-xs bg-violet-950/40 px-2 py-1.5 rounded space-y-0.5">
+              <p className="text-violet-400 font-semibold">
+                Arbiter: Agent {ms.disputeResolution.agent_pct}% · Funder {ms.disputeResolution.funder_pct}%
+              </p>
+              {ms.disputeResolution.reasoning && (
+                <p className="text-violet-300/80 leading-relaxed">{ms.disputeResolution.reasoning}</p>
+              )}
             </div>
           )}
 
@@ -157,12 +162,19 @@ export function MilestonePanel({ events }: Props) {
         </div>
       ))}
 
+      {/* Financial breakdown */}
+      {taskResult && (
+        <div className="border-t border-gray-800/60 pt-3">
+          <FinancialBreakdown events={events} />
+        </div>
+      )}
+
       {/* Final output */}
       {taskResult?.final_output && (
         <div className="space-y-1">
           <p className="text-xs text-gray-500 font-medium">Final Output</p>
-          <div className="bg-gray-950/60 rounded-lg p-2.5 text-xs text-gray-300 max-h-40 overflow-y-auto whitespace-pre-wrap">
-            {taskResult.final_output}
+          <div className="bg-gray-950/60 rounded-lg p-2.5 max-h-96 overflow-y-auto">
+            <MarkdownRenderer content={taskResult.final_output} />
           </div>
         </div>
       )}
