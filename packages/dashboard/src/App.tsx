@@ -76,7 +76,7 @@ function Dashboard() {
   const [isRunning, setIsRunning]    = useState(false);
   const [hasResult, setHasResult]    = useState(false);
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
-  const [fundingInfo, setFundingInfo] = useState<{ task_id: string; contract_id: string; viewer_url: string; total_usdc: number } | null>(null);
+  const [fundingInfo, setFundingInfo] = useState<{ task_id: string; contract_id: string; viewer_url: string; total_usdc: number; fund_xdr?: string; funder_address?: string } | null>(null);
   const [humanReview, setHumanReview] = useState<HumanReviewData | null>(null);
   const [humanOverride, setHumanOverride] = useState(false);
 
@@ -110,7 +110,7 @@ function Dashboard() {
     if (e.event === 'plan_approval_required') setPendingPlan(e.data as PendingPlan);
     if (['plan_approved', 'plan_rejected', 'plan_auto_approved'].includes(e.event)) setPendingPlan(null);
     if (e.event === 'funding_required') {
-      setFundingInfo({ task_id: e.data?.task_id ?? '', contract_id: e.data?.contract_id ?? '', viewer_url: e.data?.viewer_url ?? '', total_usdc: e.data?.total_usdc ?? 0 });
+      setFundingInfo({ task_id: e.data?.task_id ?? '', contract_id: e.data?.contract_id ?? '', viewer_url: e.data?.viewer_url ?? '', total_usdc: e.data?.total_usdc ?? 0, fund_xdr: e.data?.fund_xdr, funder_address: e.data?.funder_address });
     }
     if (e.event === 'escrow_funded') setFundingInfo(null);
     if (e.event === 'task_result') {
@@ -278,7 +278,9 @@ function Dashboard() {
           contractId={fundingInfo.contract_id}
           viewerUrl={fundingInfo.viewer_url}
           totalUsdc={fundingInfo.total_usdc}
-          onConfirm={() => handleFundingConfirm(fundingInfo.task_id)}
+          fundXdr={fundingInfo.fund_xdr}
+          funderAddress={fundingInfo.funder_address}
+          onConfirm={() => setFundingInfo(null)}
           onDismiss={() => setFundingInfo(null)}
         />
       )}

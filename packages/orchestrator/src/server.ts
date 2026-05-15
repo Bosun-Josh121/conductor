@@ -412,15 +412,24 @@ app.post('/api/tasks/:id/reject', (req, res) => {
 });
 
 // Confirm escrow funded (human confirms Freighter signing)
-app.post('/api/tasks/:id/fund-confirm', (req, res) => {
+app.post('/api/tasks/:id/fund-confirm', async (req, res) => {
   const { id } = req.params;
-  const pending = pendingFunding.get(id);
-  if (!pending) return res.status(404).json({ error: 'No pending funding for this task' });
-  clearTimeout(pending.timer);
-  pendingFunding.delete(id);
-  broadcast('escrow_funded', { task_id: id });
-  pending.resolve();
-  res.json({ status: 'funded', task_id: id });
+  const { signedXdr } = req.body as { signedXdr?: string };
+  const executor = activeExecutors.get(id);
+  if (!executor) return res.status(404).json({ error: 'No active task' });
+  try {
+    if (signedXdr) {
+      const { submitSignedTransaction } = await import('./trustless-work-client.js');
+      const txHash = await submitSignedTransaction(signedXdr);
+      broadcast('escrow_funded', { task_id: id, tx_hash: txHash });
+    } else {
+      broadcast('escrow_funded', { task_id: id });
+    }
+    executor.resolveFunding(id);
+    res.json({ status: 'funded', task_id: id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Human approves a milestone (sends Freighter-signed XDR)

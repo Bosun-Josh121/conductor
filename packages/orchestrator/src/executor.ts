@@ -20,6 +20,7 @@ import { escrowViewerUrl, txExplorerUrl } from '@conductor/common';
 import {
   deployEscrow,
   fundEscrow,
+  getFundEscrowXdr,
   markMilestone,
   releaseMilestone,
   startDispute,
@@ -89,6 +90,8 @@ export class PlanExecutor extends EventEmitter {
   private verifierKeypair: Keypair;
   private arbiterKeypair: Keypair;
 
+  // Funding gate: keyed by taskId
+  private fundingCallbacks = new Map<string, () => void>();
   // Human-review gates: keyed by "taskId:milestoneIndex"
   private humanDecisionMap = new Map<string, (d: HumanDecision) => void>();
 
@@ -98,6 +101,28 @@ export class PlanExecutor extends EventEmitter {
     this.platformKeypair = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY!);
     this.verifierKeypair = loadVerifierKeypair();
     this.arbiterKeypair = loadArbiterKeypair();
+  }
+
+  // Called by server.ts when the user's Freighter-signed fundEscrow XDR is submitted
+  resolveFunding(taskId: string) {
+    const cb = this.fundingCallbacks.get(taskId);
+    if (cb) {
+      this.fundingCallbacks.delete(taskId);
+      cb();
+    }
+  }
+
+  private waitForFunding(taskId: string, timeoutMs = 15 * 60 * 1000): Promise<void> {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        if (this.fundingCallbacks.has(taskId)) {
+          this.fundingCallbacks.delete(taskId);
+          console.log(`[Executor] Funding timed out for task ${taskId}`);
+          resolve(); // continue anyway; execution will fail gracefully later
+        }
+      }, timeoutMs);
+      this.fundingCallbacks.set(taskId, () => { clearTimeout(timer); resolve(); });
+    });
   }
 
   // Called by server.ts when the human clicks Approve or Reject in the dashboard
@@ -199,14 +224,38 @@ export class PlanExecutor extends EventEmitter {
       });
     }
 
-    // ── Auto-fund ─────────────────────────────────────────────────────────────
+    // ── Fund escrow ────────────────────────────────────────────────────────────
+    // If a connected user wallet is available, ask them to sign the fund tx
+    // with Freighter so USDC moves from their own wallet to the escrow.
+    // Fallback to platform wallet only in headless/test mode (no userAddress).
     const totalUsdc = plan.milestones.reduce((s, m) => s + m.amount, 0);
-    try {
-      const fundTx = await fundEscrow(contractId, this.platformKeypair, totalUsdc.toFixed(7));
-      this.emit('escrow_funded', { task_id, contract_id: contractId, tx_hash: fundTx, amount_usdc: totalUsdc });
-    } catch (err: any) {
-      console.warn(`[Executor] Auto-fund failed: ${err.message}`);
-      this.emit('funding_required', { task_id, contract_id: contractId, viewer_url: escrowViewerUrl(contractId), total_usdc: totalUsdc });
+
+    if (userAddress) {
+      // Build unsigned fundEscrow XDR — user signs with Freighter
+      let fundXdr = '';
+      try {
+        fundXdr = await getFundEscrowXdr(contractId, userAddress, totalUsdc.toFixed(7));
+      } catch (err: any) {
+        console.warn(`[Executor] getFundEscrowXdr failed: ${err.message}`);
+      }
+      this.emit('funding_required', {
+        task_id,
+        contract_id: contractId,
+        viewer_url: escrowViewerUrl(contractId),
+        total_usdc: totalUsdc,
+        fund_xdr: fundXdr,          // unsigned XDR for Freighter to sign
+        funder_address: userAddress,
+      });
+      // Pause until user signs and submits the fund transaction
+      await this.waitForFunding(task_id);
+    } else {
+      // Headless / test mode — platform wallet funds automatically
+      try {
+        const fundTx = await fundEscrow(contractId, this.platformKeypair, totalUsdc.toFixed(7));
+        this.emit('escrow_funded', { task_id, contract_id: contractId, tx_hash: fundTx, amount_usdc: totalUsdc });
+      } catch (err: any) {
+        console.warn(`[Executor] Platform auto-fund failed: ${err.message}`);
+      }
     }
 
     // ── Execute milestones ────────────────────────────────────────────────────

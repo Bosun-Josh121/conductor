@@ -353,6 +353,25 @@ export async function getEscrow(contractId: string): Promise<any> {
   return Array.isArray(results) ? results[0] : results;
 }
 
+// ── Get unsigned fund XDR for Freighter signing by the user ──────────────────
+
+/**
+ * Returns the unsigned fundEscrow XDR so the user can sign it with Freighter.
+ * The USDC moves from the user's wallet to the escrow contract.
+ */
+export async function getFundEscrowXdr(
+  contractId: string,
+  funderPublicKey: string,
+  amountUsdc: string,
+): Promise<string> {
+  const response = await twPost('/escrow/multi-release/fund-escrow', {
+    contractId,
+    signer: funderPublicKey,
+    amount: parseFloat(amountUsdc),
+  });
+  return extractUnsignedXdr(response, 'getFundEscrowXdr');
+}
+
 // ── Get unsigned approve XDR for external (human/Freighter) signing ───────────
 
 /**

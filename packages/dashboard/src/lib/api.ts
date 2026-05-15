@@ -18,9 +18,15 @@ export async function submitTask(task: string, budget: number, userAddress?: str
   return res.json();
 }
 
-export async function confirmFunding(taskId: string) {
-  const res = await fetch(`${BASE}/api/tasks/${taskId}/fund-confirm`, { method: 'POST' });
-  return res.json();
+export async function confirmFunding(taskId: string, signedXdr?: string) {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/fund-confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signedXdr }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? 'Funding failed');
+  return data;
 }
 
 export async function fetchAgents() {
