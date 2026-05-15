@@ -95,9 +95,10 @@ export function FundingPrompt({ taskId, contractId, viewerUrl, totalUsdc, fundXd
         {/* Need USDC hint */}
         <p className="text-[10px] text-gray-700 text-center">
           Need testnet USDC?{' '}
-          <a href="https://dev.trustlesswork.com" target="_blank" rel="noreferrer" className="text-amber-600 underline">
-            Get it from the Trustless Work faucet
+          <a href="https://faucet.circle.com" target="_blank" rel="noreferrer" className="text-amber-600 underline">
+            Circle testnet faucet
           </a>
+          {' '}(select Stellar, paste your address, click Get Tokens)
         </p>
 
         {error && (
