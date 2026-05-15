@@ -1,18 +1,17 @@
 /**
  * AI Arbiter — holds the Dispute Resolver role in Trustless Work escrows.
  *
- * When a specialist agent contests a Verifier rejection, the Arbiter weighs
- * both sides and resolves the dispute on-chain with a percentage split.
+ * Resolves contested milestone rejections on-chain via:
+ *   POST /escrow/multi-release/resolve-milestone-dispute
  *
- * Trustless Work resolveDispute accepts a receiverPercent (0-100):
- *   - 100 = full payment to agent (agent wins)
- *   - 0   = full refund to funder (funder wins)
- *   - 1-99 = split (partial award)
+ * IMPORTANT: Trustless Work resolveDispute uses ABSOLUTE amounts in a
+ * `distributions` array — NOT percentages. Each distribution is {address, amount}.
+ * The arbiter outputs agent_pct/funder_pct; the caller converts to absolute amounts.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { Keypair } from '@stellar/stellar-sdk';
-import { resolveDispute } from './trustless-work-client.js';
+import { resolveDispute, type Distribution } from './trustless-work-client.js';
 import type { DisputeResolution, VerifierVerdict } from '@conductor/common';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -32,13 +31,19 @@ export interface ArbiterResult {
 }
 
 /**
- * Arbitrate a contested milestone rejection.
- * Signs resolveDispute on-chain with the Arbiter wallet.
+ * Arbitrate a contested milestone and resolve on-chain.
+ *
+ * @param milestoneAmount - Total USDC for this milestone (needed to compute absolute distributions)
+ * @param receiverAddress - Agent wallet (gets agent share)
+ * @param funderAddress   - Original funder wallet (gets refund share)
  */
 export async function arbitrateDispute(
   input: ArbiterInput,
   contractId: string,
   milestoneIndex: number,
+  milestoneAmount: number,
+  receiverAddress: string,
+  funderAddress: string,
   arbiterKeypair: Keypair,
 ): Promise<ArbiterResult> {
   const prompt = `You are an impartial AI arbiter for a task marketplace dispute. An agent's work was rejected by the AI Verifier; the agent has contested the rejection. You must decide the outcome.
@@ -73,7 +78,7 @@ Return ONLY valid JSON (no markdown):
   "funder_pct": 0-100
 }
 
-Note: agent_pct + funder_pct must equal 100.`;
+agent_pct + funder_pct must equal 100.`;
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -84,12 +89,28 @@ Note: agent_pct + funder_pct must equal 100.`;
   const text = response.content[0].type === 'text' ? response.content[0].text : '';
   const resolution = parseResolution(text);
 
+  // Convert percentages to absolute USDC amounts for the distributions array
+  const agentAmount = (milestoneAmount * resolution.agent_pct / 100).toFixed(7);
+  const funderAmount = (milestoneAmount * resolution.funder_pct / 100).toFixed(7);
+
+  const distributions: Distribution[] = [];
+  if (resolution.agent_pct > 0) {
+    distributions.push({ address: receiverAddress, amount: agentAmount });
+  }
+  if (resolution.funder_pct > 0) {
+    distributions.push({ address: funderAddress, amount: funderAmount });
+  }
+  // Ensure at least one distribution (TW requires total > 0)
+  if (distributions.length === 0) {
+    distributions.push({ address: funderAddress, amount: milestoneAmount.toFixed(7) });
+  }
+
   let resolveTxHash: string | null = null;
   try {
     resolveTxHash = await resolveDispute(
       contractId,
       milestoneIndex,
-      resolution.agent_pct,
+      distributions,
       arbiterKeypair,
     );
     console.log(`[Arbiter] Resolved dispute on-chain (agent ${resolution.agent_pct}%): ${resolveTxHash}`);

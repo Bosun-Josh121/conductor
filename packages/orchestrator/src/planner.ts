@@ -136,6 +136,7 @@ export function planToEscrowSpec(
     humanOverride?: { approver?: string; disputeResolver?: string };
   },
 ) {
+  // Multi-release: receiver is per-milestone (not at escrow level)
   return {
     title: task.slice(0, 100),
     description: task,
@@ -144,11 +145,11 @@ export function planToEscrowSpec(
     approver: roles.approver,
     disputeResolver: roles.disputeResolver,
     releaseSigner: roles.releaseSigner,
-    receiver: roles.receiver,
     humanOverride: roles.humanOverride,
     milestones: plan.milestones.map(m => ({
       description: `${m.title}: ${m.description}`,
       amount: m.amount.toFixed(7),
+      receiver: roles.receiver,  // all milestones go to the same agent in demo path
     })),
   };
 }

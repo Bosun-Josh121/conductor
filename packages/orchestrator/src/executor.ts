@@ -24,7 +24,6 @@ import {
   markMilestone,
   releaseMilestone,
   startDispute,
-  getEscrow,
   type DeployEscrowSpec,
 } from './trustless-work-client.js';
 import { verifyMilestone, loadVerifierKeypair } from './verifier.js';
@@ -147,7 +146,7 @@ export class PlanExecutor extends EventEmitter {
         approver: this.verifierKeypair.publicKey(),
         disputeResolver: this.arbiterKeypair.publicKey(),
         releaseSigner: this.platformKeypair.publicKey(),
-        receiver: selectedAgent.stellar_address,
+        receiver: selectedAgent.stellar_address,  // used per-milestone
         humanOverride: options.humanOverride,
       });
 
@@ -288,7 +287,7 @@ export class PlanExecutor extends EventEmitter {
           console.warn(`[Executor] startDispute failed: ${err.message}`);
         }
 
-        // AI Arbiter resolves
+        // AI Arbiter resolves — pass milestone amount + addresses for absolute distribution amounts
         const arbiterResult = await arbitrateDispute(
           {
             milestoneTitle: milestone.title,
@@ -300,6 +299,9 @@ export class PlanExecutor extends EventEmitter {
           },
           contractId,
           i,
+          milestone.amount,                        // needed to compute absolute distribution amounts
+          selectedAgent.stellar_address,            // receiver (agent)
+          this.platformKeypair.publicKey(),         // funder (platform refund address)
           this.arbiterKeypair,
         );
 

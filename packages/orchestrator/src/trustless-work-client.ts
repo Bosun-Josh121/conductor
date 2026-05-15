@@ -1,17 +1,21 @@
 /**
  * Trustless Work REST API client (server-side).
  *
- * All write actions follow the same pattern:
- *   1. POST to the TW API → receive unsigned XDR
- *   2. Sign the XDR with the appropriate role wallet keypair
- *   3. Submit via the TW API's send-transaction endpoint
- *   4. Return the result
+ * All write actions: POST to TW API → receive unsigned XDR → sign server-side → submit.
  *
- * Based on the Trustless Work REST API (dev environment):
- *   https://dev.api.trustlesswork.com
- *   Swagger: https://api.trustlesswork.com/docs
+ * Verified endpoints (source: docs.trustlesswork.com api-rest/* pages, May 2026):
+ *   Base URL (testnet): https://dev.api.trustlesswork.com
+ *   Auth header: x-api-key
+ *   Submit: POST /helper/send-transaction  { signedXdr: string }
  *
- * Testnet network passphrase: "Test SDF Network ; September 2015"
+ * Multi-release endpoints confirmed:
+ *   POST /deployer/multi-release                           — deploy
+ *   POST /escrow/multi-release/fund-escrow                 — fund
+ *   POST /escrow/multi-release/change-milestone-status     — mark done
+ *   POST /escrow/multi-release/approve-milestone           — approve
+ *   POST /escrow/multi-release/release-milestone-funds     — release
+ *   POST /escrow/multi-release/dispute-milestone           — start dispute
+ *   POST /escrow/multi-release/resolve-milestone-dispute   — resolve dispute
  */
 
 import {
@@ -19,13 +23,14 @@ import {
   TransactionBuilder,
   Networks,
 } from '@stellar/stellar-sdk';
+import { v4 as uuidv4 } from 'uuid';
 
 const TW_API_URL = process.env.TRUSTLESS_WORK_API_URL || 'https://dev.api.trustlesswork.com';
 const TW_API_KEY = process.env.TRUSTLESS_WORK_API_KEY || '';
 const HORIZON_URL = process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET; // "Test SDF Network ; September 2015"
 
-// ── Helper: sign an unsigned XDR with a keypair ────────────────────────────────
+// ── Signing helper ─────────────────────────────────────────────────────────────
 
 export function signXdr(unsignedXdr: string, signerKeypair: Keypair): string {
   const tx = TransactionBuilder.fromXDR(unsignedXdr, NETWORK_PASSPHRASE);
@@ -33,54 +38,50 @@ export function signXdr(unsignedXdr: string, signerKeypair: Keypair): string {
   return tx.toEnvelope().toXDR('base64');
 }
 
-// ── Helper: call TW API ────────────────────────────────────────────────────────
+// ── HTTP helpers ───────────────────────────────────────────────────────────────
+
+function buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { ...extra };
+  if (TW_API_KEY) h['x-api-key'] = TW_API_KEY;
+  return h;
+}
 
 async function twPost(path: string, body: unknown): Promise<any> {
-  const url = `${TW_API_URL}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${TW_API_URL}${path}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(TW_API_KEY ? { 'Authorization': `Bearer ${TW_API_KEY}` } : {}),
-    },
+    headers: buildHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`TW API ${path} → ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`TW API ${path} → ${res.status}: ${text.slice(0, 400)}`);
   }
-
   return res.json();
 }
 
 async function twGet(path: string): Promise<any> {
-  const url = `${TW_API_URL}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${TW_API_URL}${path}`, {
     method: 'GET',
-    headers: {
-      ...(TW_API_KEY ? { 'Authorization': `Bearer ${TW_API_KEY}` } : {}),
-    },
+    headers: buildHeaders(),
     signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`TW API ${path} → ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`TW API ${path} → ${res.status}: ${text.slice(0, 400)}`);
   }
-
   return res.json();
 }
 
-// ── Helper: submit a signed XDR via TW's send-transaction endpoint ─────────────
+// ── Submit signed XDR via TW endpoint, with Horizon fallback ──────────────────
 
-async function submitSignedXdr(signedXdr: string): Promise<string> {
-  const result = await twPost('/helper/send-transaction', { signedTransaction: signedXdr });
+async function submitToTW(signedXdr: string): Promise<string> {
+  // Confirmed field name: signedXdr (docs.trustlesswork.com/api-rest/helpers/send-transaction)
+  const result = await twPost('/helper/send-transaction', { signedXdr });
   return result.transactionHash ?? result.hash ?? result.tx_hash ?? '';
 }
-
-// ── Submit a signed XDR directly to Horizon (fallback) ────────────────────────
 
 async function submitToHorizon(signedXdr: string): Promise<string> {
   const res = await fetch(`${HORIZON_URL}/transactions`, {
@@ -91,52 +92,58 @@ async function submitToHorizon(signedXdr: string): Promise<string> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Horizon submit failed: ${text.slice(0, 300)}`);
+    throw new Error(`Horizon submit: ${text.slice(0, 300)}`);
   }
   const data = await res.json();
   return data.hash ?? '';
 }
 
-// ── Sign + submit helper (tries TW endpoint first, falls back to Horizon) ─────
-
 async function signAndSubmit(unsignedXdr: string, signerKeypair: Keypair): Promise<string> {
   const signedXdr = signXdr(unsignedXdr, signerKeypair);
   try {
-    return await submitSignedXdr(signedXdr);
-  } catch {
-    // Fall back to direct Horizon submission
+    return await submitToTW(signedXdr);
+  } catch (err: any) {
+    console.warn(`[TW] /helper/send-transaction failed (${err.message}), falling back to Horizon`);
     return await submitToHorizon(signedXdr);
   }
 }
 
-// ── USDC trustline object used in deploy payloads ─────────────────────────────
+function extractUnsignedXdr(response: any, op: string): string {
+  // Confirmed response field: unsignedTransaction (docs.trustlesswork.com/escrow-react-sdk)
+  const xdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
+  if (!xdr) throw new Error(`${op}: no unsigned XDR in response: ${JSON.stringify(response).slice(0, 200)}`);
+  return xdr;
+}
+
+// ── USDC trustline helper ──────────────────────────────────────────────────────
 
 function usdcTrustline() {
   return {
     address: process.env.USDC_ASSET_ISSUER || 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
-    decimals: parseInt(process.env.USDC_DECIMALS || '7', 10),
+    // Confirmed field name: symbol (not decimals)
+    symbol: process.env.USDC_ASSET_CODE || 'USDC',
   };
 }
 
-// ── Public API ─────────────────────────────────────────────────────────────────
+// ── Public types ───────────────────────────────────────────────────────────────
 
 export interface MilestonePayload {
-  description: string;   // acceptance criteria live here
-  amount: string;        // USDC as string (e.g. "1.00")
+  description: string;
+  amount: string;       // USDC as decimal string e.g. "1.0000000"
+  receiver: string;     // per-milestone receiver address (confirmed: multi-release has receiver per milestone)
 }
 
 export interface DeployEscrowSpec {
   title: string;
   description: string;
   platformAddress: string;
-  serviceProvider: string;   // specialist agent wallet
-  approver: string;          // AI Verifier wallet
-  disputeResolver: string;   // AI Arbiter wallet
-  releaseSigner: string;     // platform wallet
-  receiver: string;          // specialist agent wallet (same as serviceProvider for demo)
+  serviceProvider: string;
+  approver: string;
+  disputeResolver: string;
+  releaseSigner: string;
   milestones: MilestonePayload[];
   humanOverride?: {
-    approver?: string;       // if set, use human wallet as Approver instead
+    approver?: string;
     disputeResolver?: string;
   };
 }
@@ -146,208 +153,181 @@ export interface DeployResult {
   transactionHash: string;
 }
 
-/**
- * Deploy a multi-release escrow.
- * The deployer is the platform wallet (signs the deploy transaction).
- */
+export interface Distribution {
+  address: string;
+  amount: string;   // absolute USDC amount as decimal string
+}
+
+// ── Deploy multi-release escrow ────────────────────────────────────────────────
+
 export async function deployEscrow(
   spec: DeployEscrowSpec,
   platformKeypair: Keypair,
 ): Promise<DeployResult> {
-  const approver = spec.humanOverride?.approver ?? spec.approver;
+  const approver    = spec.humanOverride?.approver       ?? spec.approver;
   const disputeResolver = spec.humanOverride?.disputeResolver ?? spec.disputeResolver;
 
+  // Confirmed payload structure for POST /deployer/multi-release
+  // roles is a nested object; trustline uses symbol not decimals; no top-level amount/receiver
   const payload = {
+    signer: platformKeypair.publicKey(),
+    engagementId: uuidv4(),           // required unique identifier
     title: spec.title,
     description: spec.description,
-    platformAddress: spec.platformAddress,
-    serviceProvider: spec.serviceProvider,
-    approver,
-    disputeResolver,
-    releaseSigner: spec.releaseSigner,
-    receiver: spec.receiver,
-    amount: spec.milestones.reduce((sum, m) => sum + parseFloat(m.amount), 0).toFixed(7),
+    roles: {
+      approver,
+      serviceProvider: spec.serviceProvider,
+      platformAddress: spec.platformAddress,
+      releaseSigner: spec.releaseSigner,
+      disputeResolver,
+    },
+    platformFee: 0,
+    milestones: spec.milestones.map(m => ({
+      description: m.description,
+      amount: m.amount,
+      receiver: m.receiver,
+    })),
     trustline: usdcTrustline(),
-    milestones: spec.milestones,
-    signer: platformKeypair.publicKey(),
   };
 
-  const response = await twPost('/escrow/initiate-escrow', payload);
-
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`deployEscrow: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
+  const response = await twPost('/deployer/multi-release', payload);
+  const unsignedXdr = extractUnsignedXdr(response, 'deployEscrow');
   const txHash = await signAndSubmit(unsignedXdr, platformKeypair);
 
-  // The contract ID is returned in the response — it may need a second API call
-  const contractId = response.escrowId ?? response.contractId ?? response.contract_id ?? '';
+  // Confirmed response field: contractId
+  const contractId = response.contractId ?? response.escrowId ?? response.contract_id ?? '';
 
   return { contractId, transactionHash: txHash };
 }
 
-/**
- * Fund a deployed escrow. The funder signs this transaction.
- * In the demo path the platform wallet funds it; in production the human funder signs in browser.
- */
+// ── Fund escrow ────────────────────────────────────────────────────────────────
+
 export async function fundEscrow(
   contractId: string,
   funderKeypair: Keypair,
   amountUsdc: string,
 ): Promise<string> {
-  const payload = {
+  const response = await twPost('/escrow/multi-release/fund-escrow', {
     contractId,
     signer: funderKeypair.publicKey(),
-    amount: amountUsdc,
-  };
-
-  const response = await twPost('/escrow/fund-escrow', payload);
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`fundEscrow: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
-  return signAndSubmit(unsignedXdr, funderKeypair);
+    amount: parseFloat(amountUsdc),  // confirmed: amount is a number
+  });
+  return signAndSubmit(extractUnsignedXdr(response, 'fundEscrow'), funderKeypair);
 }
 
-/**
- * Mark a milestone as done (Service Provider role).
- * The specialist agent wallet signs.
- */
+// ── Mark milestone done (Service Provider signs) ───────────────────────────────
+
 export async function markMilestone(
   contractId: string,
   milestoneIndex: number,
   evidence: string,
   serviceProviderKeypair: Keypair,
 ): Promise<string> {
-  const payload = {
+  // Confirmed: POST /escrow/multi-release/change-milestone-status
+  // Fields: contractId, milestoneIndex (string), newStatus (string),
+  //         newEvidence (string), serviceProvider (address)
+  const response = await twPost('/escrow/multi-release/change-milestone-status', {
     contractId,
-    milestoneIndex,
-    evidence,
-    signer: serviceProviderKeypair.publicKey(),
-  };
-
-  const response = await twPost('/escrow/change-milestone-status', payload);
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`markMilestone: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
-  return signAndSubmit(unsignedXdr, serviceProviderKeypair);
+    milestoneIndex: String(milestoneIndex),
+    newStatus: 'completed',
+    newEvidence: evidence.slice(0, 500),
+    serviceProvider: serviceProviderKeypair.publicKey(),
+  });
+  return signAndSubmit(extractUnsignedXdr(response, 'markMilestone'), serviceProviderKeypair);
 }
 
-/**
- * Approve a milestone (Approver role = AI Verifier wallet).
- */
+// ── Approve milestone (Approver / AI Verifier signs) ──────────────────────────
+
 export async function approveMilestone(
   contractId: string,
   milestoneIndex: number,
   approverKeypair: Keypair,
 ): Promise<string> {
-  const payload = {
+  // Confirmed: POST /escrow/multi-release/approve-milestone
+  // Fields: contractId, milestoneIndex (string), approver (address)
+  const response = await twPost('/escrow/multi-release/approve-milestone', {
     contractId,
-    milestoneIndex,
-    signer: approverKeypair.publicKey(),
-  };
-
-  const response = await twPost('/escrow/approve-milestone', payload);
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`approveMilestone: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
-  return signAndSubmit(unsignedXdr, approverKeypair);
+    milestoneIndex: String(milestoneIndex),
+    approver: approverKeypair.publicKey(),
+  });
+  return signAndSubmit(extractUnsignedXdr(response, 'approveMilestone'), approverKeypair);
 }
 
-/**
- * Release funds for an approved milestone (Release Signer = platform wallet).
- */
+// ── Release milestone funds (Release Signer / Platform signs) ─────────────────
+
 export async function releaseMilestone(
   contractId: string,
   milestoneIndex: number,
   releaseSignerKeypair: Keypair,
 ): Promise<string> {
-  const payload = {
+  // Confirmed: POST /escrow/multi-release/release-milestone-funds
+  // Fields: contractId, releaseSigner (address), milestoneIndex (string)
+  const response = await twPost('/escrow/multi-release/release-milestone-funds', {
     contractId,
-    milestoneIndex,
-    signer: releaseSignerKeypair.publicKey(),
-  };
-
-  const response = await twPost('/escrow/release-milestone', payload);
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`releaseMilestone: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
-  return signAndSubmit(unsignedXdr, releaseSignerKeypair);
+    milestoneIndex: String(milestoneIndex),
+    releaseSigner: releaseSignerKeypair.publicKey(),
+  });
+  return signAndSubmit(extractUnsignedXdr(response, 'releaseMilestone'), releaseSignerKeypair);
 }
 
-/**
- * Start a dispute on a milestone (Service Provider role).
- */
+// ── Start dispute (Service Provider signs) ────────────────────────────────────
+
 export async function startDispute(
   contractId: string,
   milestoneIndex: number,
   serviceProviderKeypair: Keypair,
 ): Promise<string> {
-  const payload = {
+  // Confirmed: POST /escrow/multi-release/dispute-milestone
+  // Fields: contractId, milestoneIndex (string), signer (address)
+  const response = await twPost('/escrow/multi-release/dispute-milestone', {
     contractId,
-    milestoneIndex,
+    milestoneIndex: String(milestoneIndex),
     signer: serviceProviderKeypair.publicKey(),
-  };
-
-  const response = await twPost('/escrow/start-dispute', payload);
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`startDispute: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
-  return signAndSubmit(unsignedXdr, serviceProviderKeypair);
+  });
+  return signAndSubmit(extractUnsignedXdr(response, 'startDispute'), serviceProviderKeypair);
 }
 
-/**
- * Resolve a dispute (Dispute Resolver = AI Arbiter wallet).
- * The Trustless Work resolveDispute is a release/refund decision.
- * agentPercent: percentage going to receiver (0-100); remainder goes back to funder.
- */
+// ── Resolve dispute (Dispute Resolver / AI Arbiter signs) ─────────────────────
+
 export async function resolveDispute(
   contractId: string,
   milestoneIndex: number,
-  agentPercent: number,
+  distributions: Distribution[],  // absolute amounts, NOT percentages
   arbiterKeypair: Keypair,
 ): Promise<string> {
-  // Clamp to valid range
-  const receiverPercent = Math.min(100, Math.max(0, Math.round(agentPercent)));
-  const funderPercent = 100 - receiverPercent;
-
-  const payload = {
+  // Confirmed: POST /escrow/multi-release/resolve-milestone-dispute
+  // Fields: contractId, disputeResolver (address), milestoneIndex (string),
+  //         distributions [{address, amount}] — amounts MUST be absolute, not percentages
+  const response = await twPost('/escrow/multi-release/resolve-milestone-dispute', {
     contractId,
-    milestoneIndex,
-    receiverPercent,
-    funderPercent,
-    signer: arbiterKeypair.publicKey(),
-  };
-
-  const response = await twPost('/escrow/resolve-dispute', payload);
-  const unsignedXdr = response.unsignedTransaction ?? response.xdr ?? response.transaction;
-  if (!unsignedXdr) {
-    throw new Error(`resolveDispute: no unsigned XDR in response: ${JSON.stringify(response)}`);
-  }
-
-  return signAndSubmit(unsignedXdr, arbiterKeypair);
+    milestoneIndex: String(milestoneIndex),
+    disputeResolver: arbiterKeypair.publicKey(),
+    distributions,
+  });
+  return signAndSubmit(extractUnsignedXdr(response, 'resolveDispute'), arbiterKeypair);
 }
 
-/**
- * Read current on-chain escrow state.
- */
+// ── Read escrow state ──────────────────────────────────────────────────────────
+
 export async function getEscrow(contractId: string): Promise<any> {
-  return twGet(`/escrow/get-escrow-by-contract-id?contractId=${encodeURIComponent(contractId)}`);
+  // Try indexer endpoint first, then direct escrow endpoint
+  try {
+    return await twGet(`/escrow/${encodeURIComponent(contractId)}`);
+  } catch {
+    try {
+      return await twGet(`/indexer/get-escrows-by-contract-ids?contractIds=${encodeURIComponent(contractId)}`);
+    } catch {
+      return await twGet(`/escrow/get-escrow-by-contract-id?contractId=${encodeURIComponent(contractId)}`);
+    }
+  }
 }
 
-/**
- * Submit a pre-signed XDR (e.g., signed by Freighter in the browser).
- */
+// ── Submit a pre-signed XDR (from Freighter) ──────────────────────────────────
+
 export async function submitSignedTransaction(signedXdr: string): Promise<string> {
-  return submitSignedXdr(signedXdr);
+  try {
+    return await submitToTW(signedXdr);
+  } catch {
+    return await submitToHorizon(signedXdr);
+  }
 }
