@@ -11,6 +11,7 @@ import { registerSelf } from './register.js';
 
 const PORT = parseInt(process.env.STELLAR_ORACLE_PORT || process.env.PORT || '4001');
 const SECRET_KEY = process.env.STELLAR_ORACLE_SECRET_KEY!;
+const USDC_ISSUER = process.env.USDC_ASSET_ISSUER || 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 
 if (!SECRET_KEY) {
   console.error('[StellarOracle] STELLAR_ORACLE_SECRET_KEY not set');
@@ -62,23 +63,47 @@ app.post('/query', async (req, res) => {
       }
     }
 
-    // Format as human-readable markdown summary
-    const lines: string[] = ['# Stellar Oracle Data Report', ''];
+    // Format as human-readable markdown — use orderbook as authoritative price source
+    // (Testnet trades may show stale prices from infrequent activity)
+    const lines: string[] = [
+      '# Stellar Oracle — Stellar Testnet DEX Data',
+      `*Network: Stellar Testnet (soroban-testnet.stellar.org)*`,
+      `*Asset pair: XLM (native) / USDC (${USDC_ISSUER.slice(0, 8)}…)*`,
+      '',
+    ];
 
-    if (trades && trades.length > 0) {
-      const latestPrice = parseFloat(trades[0].price);
-      lines.push(`## XLM/USDC Price`);
-      lines.push(`- **Latest price**: ${latestPrice.toFixed(6)} USDC per XLM`);
-      lines.push(`- **Recent trades**: ${trades.length} trades fetched`);
-      lines.push(`- **Trade range**: ${Math.min(...trades.map((t: any) => parseFloat(t.price))).toFixed(6)} – ${Math.max(...trades.map((t: any) => parseFloat(t.price))).toFixed(6)} USDC`);
+    if (orderbook) {
+      // Derive mid-price from orderbook (more reliable on testnet than trade history)
+      const bestBid = parseFloat(orderbook.bids[0]?.price ?? '0');
+      const bestAsk = parseFloat(orderbook.asks[0]?.price ?? '0');
+      const midPrice = bestBid && bestAsk ? ((bestBid + bestAsk) / 2).toFixed(6) : 'N/A';
+
+      lines.push('## Current XLM/USDC Price (from DEX Orderbook)');
+      lines.push(`- **Mid price**: ${midPrice} USDC per XLM`);
+      lines.push(`- **Best bid (buy XLM at)**: ${orderbook.bids[0]?.price ?? 'N/A'} USDC/XLM`);
+      lines.push(`- **Best ask (sell XLM at)**: ${orderbook.asks[0]?.price ?? 'N/A'} USDC/XLM`);
+      lines.push(`- **Spread**: ${orderbook.spread} USDC`);
+      lines.push('');
+      lines.push('## Top 5 Bids (buyers, descending price)');
+      orderbook.bids.slice(0, 5).forEach((b: any, i: number) => {
+        lines.push(`  ${i + 1}. Price: ${b.price} USDC/XLM | Amount: ${b.amount} XLM`);
+      });
+      lines.push('');
+      lines.push('## Top 5 Asks (sellers, ascending price)');
+      orderbook.asks.slice(0, 5).forEach((a: any, i: number) => {
+        lines.push(`  ${i + 1}. Price: ${a.price} USDC/XLM | Amount: ${a.amount} XLM`);
+      });
       lines.push('');
     }
 
-    if (orderbook) {
-      lines.push(`## DEX Orderbook`);
-      lines.push(`- **Best bid**: ${orderbook.bids[0]?.price ?? 'N/A'} USDC`);
-      lines.push(`- **Best ask**: ${orderbook.asks[0]?.price ?? 'N/A'} USDC`);
-      lines.push(`- **Spread**: ${orderbook.spread} USDC`);
+    if (trades && trades.length > 0) {
+      const latestPrice = parseFloat(trades[0].price);
+      lines.push('## Recent Trade History (last 10 trades)');
+      lines.push(`- **Most recent trade price**: ${latestPrice.toFixed(6)} USDC per XLM`);
+      lines.push(`- **Note**: Testnet trade history may differ from orderbook due to infrequent activity`);
+      trades.slice(0, 5).forEach((t: any, i: number) => {
+        lines.push(`  ${i + 1}. Price: ${t.price} | XLM: ${t.base_amount} | USDC: ${t.counter_amount} | ${t.timestamp?.slice(0, 10) ?? ''}`);
+      });
       lines.push('');
     }
 
