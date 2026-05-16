@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Music2, Zap, Bot, History, PlusCircle, LogOut, ExternalLink,
   AlertTriangle, Shield, CheckCircle, XCircle, Radio,
@@ -79,19 +79,35 @@ function Dashboard() {
   const [fundingInfo, setFundingInfo] = useState<{ task_id: string; contract_id: string; viewer_url: string; total_usdc: number; fund_xdr?: string; funder_address?: string } | null>(null);
   const [humanReview, setHumanReview] = useState<HumanReviewData | null>(null);
   const [humanOverride, setHumanOverride] = useState(false);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
 
   const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { events, connected, clearEvents } = useWebSocket(WS_URL);
+
+  // Only show events that belong to the task this session started.
+  // This prevents events from other users' concurrent tasks leaking into the feed.
+  const taskEvents = useMemo(() => {
+    if (!currentTaskId) return events;
+    return events.filter(e => !e.data?.task_id || e.data.task_id === currentTaskId);
+  }, [events, currentTaskId]);
+
+  const handleClearEvents = useCallback(() => {
+    clearEvents();
+    setCurrentTaskId(null);
+  }, [clearEvents]);
 
   const handleSubmit = useCallback(async (task: string, budget: number) => {
     setIsRunning(true);
     setHasResult(false);
     clearEvents();
+    setCurrentTaskId(null);
     try {
-      await submitTask(task, budget, publicKey ?? undefined, {
+      const result = await submitTask(task, budget, publicKey ?? undefined, {
         humanOverrideApprover: humanOverride ? publicKey ?? undefined : undefined,
         humanOverrideResolver: humanOverride ? publicKey ?? undefined : undefined,
       });
+      // Capture the task_id so we only show events from this specific task
+      if (result?.task_id) setCurrentTaskId(result.task_id);
     } catch {
       setIsRunning(false);
       addToast('Task submission failed', 'error');
@@ -99,7 +115,7 @@ function Dashboard() {
   }, [publicKey, clearEvents, addToast, humanOverride]);
 
   useEffect(() => {
-    const e = events[0];
+    const e = taskEvents[0]; // most recent event for THIS session's task
     if (!e) return;
     if (['task_complete', 'task_error', 'task_result', 'task_infeasible'].includes(e.event)) {
       setIsRunning(false);
@@ -121,7 +137,7 @@ function Dashboard() {
     }
     if (e.event === 'task_error') addToast(`Failed: ${e.data?.error ?? 'unknown'}`, 'error');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [taskEvents]);
 
   const handleFundingConfirm = async (taskId: string) => {
     try {
@@ -133,8 +149,8 @@ function Dashboard() {
     }
   };
 
-  const escrowUrl = events.find(e => e.event === 'escrow_deployed')?.data?.viewer_url
-    || events.find(e => e.event === 'task_result')?.data?.escrow_viewer_url;
+  const escrowUrl = taskEvents.find(e => e.event === 'escrow_deployed')?.data?.viewer_url
+    || taskEvents.find(e => e.event === 'task_result')?.data?.escrow_viewer_url;
 
   return (
     <div className="min-h-screen bg-[#080c10] text-gray-200 flex flex-col">
@@ -240,14 +256,14 @@ function Dashboard() {
 
             {/* Center col: live feed */}
             <div className="col-span-12 lg:col-span-5 xl:col-span-6 space-y-3">
-              <ActivityFeed events={events} connected={connected} onClear={clearEvents} />
-              {hasResult && <MilestonePanel events={events} />}
+              <ActivityFeed events={taskEvents} connected={connected} onClear={handleClearEvents} />
+              {hasResult && <MilestonePanel events={taskEvents} />}
             </div>
 
             {/* Right col: escrow */}
             <div className="col-span-12 lg:col-span-3 space-y-3">
-              <EscrowPanel events={events} />
-              <EscrowStats events={events} isRunning={isRunning} />
+              <EscrowPanel events={taskEvents} />
+              <EscrowStats events={taskEvents} isRunning={isRunning} />
             </div>
           </div>
         )}

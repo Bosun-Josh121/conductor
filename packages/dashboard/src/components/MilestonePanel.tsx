@@ -108,7 +108,7 @@ export function MilestonePanel({ events }: Props) {
                 <span className="text-xs text-gray-300 font-medium">{m.title}</span>
                 <span className="ml-auto text-xs text-gray-600">${m.amount?.toFixed(4)}</span>
               </div>
-              <p className="text-xs text-gray-600 line-clamp-2">{m.description}</p>
+              <p className="text-xs text-gray-500 leading-relaxed">{m.description}</p>
             </div>
           ))}
         </div>

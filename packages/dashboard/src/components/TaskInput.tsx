@@ -104,14 +104,14 @@ export function TaskInput({ onSubmit, isRunning, humanOverride, onHumanOverrideC
         </button>
       </form>
 
-      <div className="space-y-1 border-t border-gray-800/40 pt-2">
-        <p className="text-xs text-gray-800 uppercase tracking-wider">Try</p>
+      <div className="space-y-1.5 border-t border-gray-800/40 pt-2.5">
+        <p className="text-[10px] font-semibold text-emerald-600 uppercase tracking-widest">Try an example</p>
         {EXAMPLE_TASKS.map((t, i) => (
           <button
             key={i}
             onClick={() => setTask(t)}
             disabled={isRunning}
-            className="w-full text-left text-xs text-gray-700 hover:text-gray-400 transition-colors line-clamp-1"
+            className="w-full text-left text-xs text-gray-400 hover:text-emerald-400 bg-gray-950/40 hover:bg-emerald-950/30 border border-gray-800/60 hover:border-emerald-900/60 rounded-lg px-2.5 py-2 transition-all disabled:opacity-40 leading-relaxed"
           >
             {t}
           </button>

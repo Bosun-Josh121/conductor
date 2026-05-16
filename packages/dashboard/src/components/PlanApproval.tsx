@@ -40,15 +40,17 @@ export function PlanApproval({ plan, onApprove, onReject, onDismiss }: Props) {
 
         <div className="space-y-2">
           <p className="text-xs font-medium text-gray-300">Milestones ({plan.milestones?.length ?? 0})</p>
+          <div className="max-h-60 overflow-y-auto space-y-2 pr-0.5">
           {(plan.milestones ?? []).map((m, i) => (
             <div key={i} className="bg-gray-950/60 rounded-lg p-2.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-medium text-gray-200">{m.title}</p>
-                <p className="text-xs text-gray-500">${m.amount?.toFixed(4)}</p>
+                <p className="text-xs text-gray-500 shrink-0">${m.amount?.toFixed(4)}</p>
               </div>
-              <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">{m.description}</p>
+              <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{m.description}</p>
             </div>
           ))}
+          </div>
         </div>
 
         <div className="flex items-center justify-between border-t border-gray-800 pt-3">
